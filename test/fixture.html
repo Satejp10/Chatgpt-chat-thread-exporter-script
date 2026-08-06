@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fake lazy-loading thread</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: sans-serif; }
+  #thread { height: 100vh; overflow-y: auto; padding: 12px; }
+  .turn { border: 1px solid #ddd; padding: 10px; margin: 8px 0; min-height: 60px; }
+  #side { position: fixed; left: 0; top: 0; width: 0; height: 100vh; overflow-y: auto; }
+</style>
+</head>
+<body>
+<!-- A tall scrollable sidebar: the old scroller-detection picked whichever
+     element had the largest scrollHeight, which could be this. -->
+<div id="side"><div style="height: 40000px"></div></div>
+<div id="thread"></div>
+<script>
+  const TOTAL = 120;
+  const PAGE = 30;
+  let firstLoaded = TOTAL - PAGE;
+  let busy = false;
+
+  function makeMsg(i) {
+    const d = document.createElement('div');
+    d.className = 'turn';
+    d.setAttribute('data-message-author-role', i % 2 === 0 ? 'user' : 'assistant');
+    d.setAttribute('data-message-id', 'msg-' + i);
+    const p = document.createElement('p');
+    p.textContent = 'Message number ' + i + '. ' + (i % 2 === 0 ? 'A question about things.' : 'An answer about things.');
+    d.appendChild(p);
+    if (i % 2 === 1) {
+      const a = document.createElement('a');
+      a.href = 'https://example.com/ref/' + i;
+      a.textContent = 'reference ' + i;
+      d.appendChild(a);
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      code.className = 'language-js';
+      code.textContent = 'const x = ' + i + ';';
+      pre.appendChild(code);
+      d.appendChild(pre);
+    }
+    return d;
+  }
+
+  const thread = document.getElementById('thread');
+  const frag = document.createDocumentFragment();
+  for (let i = firstLoaded; i < TOTAL; i++) frag.appendChild(makeMsg(i));
+  thread.appendChild(frag);
+  thread.scrollTop = thread.scrollHeight;
+
+  // Lazy prepend, the way a real chat app does it: older turns arrive after a
+  // delay and the scroll offset is re-anchored, so the viewport is no longer
+  // at the top afterwards.
+  thread.addEventListener('scroll', () => {
+    if (thread.scrollTop > 2 || firstLoaded <= 0 || busy) return;
+    busy = true;
+    setTimeout(() => {
+      const before = thread.scrollHeight;
+      const start = Math.max(0, firstLoaded - PAGE);
+      const f = document.createDocumentFragment();
+      for (let i = start; i < firstLoaded; i++) f.appendChild(makeMsg(i));
+      thread.insertBefore(f, thread.firstChild);
+      firstLoaded = start;
+      thread.scrollTop = thread.scrollHeight - before;
+      busy = false;
+    }, 150);
+  });
+
+  window.__total = TOTAL;
+</script>
+</body>
+</html>
