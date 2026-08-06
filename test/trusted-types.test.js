@@ -9,7 +9,16 @@ const REPO = path.join(__dirname, '..');
 const FILE = 'ChatGPT Thread Exporter (Robust Auto-Scroll).user.js';
 const HERE = __dirname;
 
-const oldSrc = execSync(`git -C "${REPO}" show HEAD:"${FILE}"`, { encoding: 'utf8' });
+// The pre-audit script, from git. `HEAD` is wrong here: once the audit commit
+// lands, HEAD is the current version and the comparison silently compares the
+// new script against itself and passes.
+const BASELINE_REF = process.env.BASELINE_REF || '5405be1';
+let oldSrc = null;
+try {
+  oldSrc = execSync(`git -C "${REPO}" show ${BASELINE_REF}:"${FILE}"`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+} catch (e) {
+  console.log('(baseline ' + BASELINE_REF + ' unavailable; skipping the v3 comparison)');
+}
 const newSrc = fs.readFileSync(path.join(REPO, FILE), 'utf8');
 
 // Same fixture, but with Trusted Types enforced the way chatgpt.com may.
@@ -22,15 +31,25 @@ const TT = 'file://' + path.join(HERE, 'fixture-tt.html');
 (async () => {
   const browser = await chromium.launch({ executablePath: findChromium() });
 
-  for (const [label, src] of [['v3.0', oldSrc], ['v4.0', newSrc]]) {
+  const subjects = [];
+  if (oldSrc) subjects.push(['baseline ' + BASELINE_REF, oldSrc]);
+  subjects.push(['current', newSrc]);
+
+  for (const [label, src] of subjects) {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     const errs = [];
     page.on('pageerror', e => errs.push(String(e).split('\n')[0]));
     await page.goto(TT);
     await page.evaluate(src);
-    await page.click('.export-chat-btn');
-    await page.waitForTimeout(500);
+    // Either of these can throw for a script that violates Trusted Types; that
+    // is the result being measured, not a reason to abort the run.
+    try {
+      await page.click('.export-chat-btn', { timeout: 5000 });
+      await page.waitForTimeout(500);
+    } catch (e) {
+      errs.push(String(e).split('\n')[0]);
+    }
     const modalUsable = await page.evaluate(() =>
       !!document.querySelector('.export-modal-overlay') &&
       document.querySelectorAll('.export-modal-overlay button').length >= 2);
