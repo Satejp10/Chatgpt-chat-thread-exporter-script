@@ -50,3 +50,12 @@ Entry format:
 - open: whether chatgpt.com currently enforces Trusted Types in production (the fix is in either way)
 - open: real-world verification on a long thread with the script installed; everything here was verified against a synthetic fixture
 - next: user installs v4.0 and exercises it on a real long thread; timestamps only after a DOM sample lands
+
+## 2026-08-06 | session 2 | web
+- did: PR #1 merged to main as 75f0f9f; generated status report SR-chatgpt-chat-thread-exporter-script-001
+- did: re-verified the whole suite from a clean checkout — unit 56/56, e2e 28/28, measure, security grep, node --check, metadata grep
+- broke/fixed: test/trusted-types.test.js read its baseline from `git show HEAD:`, so once the v4.0 commit landed it compared the new script against itself and reported both sides clean — a false pass on the session-1 headline finding. Fixed to BASELINE_REF (default 5405be1), matching e2e.test.js, and guarded the click so a script that dies under Trusted Types records the error instead of aborting the run. Finding reproduces: baseline modal unusable with `TypeError: Failed to set the 'innerHTML' property on 'Element'`, current clean.
+- decided: any comparison test pins an explicit ref, never HEAD, because HEAD becomes the thing under test the moment the work is committed
+- open: everything from session 1 still open — timestamps blocked on a docs/ref/ DOM sample, no real-world run yet, production Trusted Types enforcement unknown
+- open: whether test/ stays (it was outside the approved plan) and whether the conventions should move into a CLAUDE.md
+- next: deliver report 001 to chat; wait for the user's real-world run before any further code
