@@ -1,0 +1,16 @@
+{
+  "name": "chatgpt-exporter-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test-only tooling. The userscript itself has zero dependencies and no build step; nothing here ships with it.",
+  "scripts": {
+    "test": "node unit.test.js && node e2e.test.js && node trusted-types.test.js",
+    "test:unit": "node unit.test.js",
+    "test:e2e": "node e2e.test.js",
+    "test:tt": "node trusted-types.test.js",
+    "measure": "node measure.js"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.1"
+  }
+}
