@@ -59,3 +59,21 @@ Entry format:
 - open: everything from session 1 still open — timestamps blocked on a docs/ref/ DOM sample, no real-world run yet, production Trusted Types enforcement unknown
 - open: whether test/ stays (it was outside the approved plan) and whether the conventions should move into a CLAUDE.md
 - next: deliver report 001 to chat; wait for the user's real-world run before any further code
+
+## 2026-08-09 | session 3 | web
+- did: v4.1 — export privacy toggles for the conversation URL and title, plus a tab-visibility warning on the capture loader
+- confirmed: user ran v4.0 on a real thread and it worked, closing the session-1 open item on real-world verification
+- decided: two toggles, not one. The URL is `chatgpt.com/c/<uuid>` and opaque to anyone not signed into the account; the title is plain English and lands in the *filename*, so it shows in a file manager or an upload preview before the file is opened. A URL toggle alone is an incomplete privacy control.
+- decided: withheld means the field is omitted from the file entirely, never blanked and never `null`, because an empty `Source:` still discloses that one existed. Same invariant already applied to timestamps.
+- decided: without the title the filename falls back to `chatgpt-export-<date>-<time>`. The time is required, not cosmetic: date alone collides on the second export of the day and reintroduces the P3-c defect v4.0 fixed.
+- decided: prefs persist in localStorage, because a privacy control you must re-tick every time is one you will forget. Cost: the README's "no localStorage" guarantee was reworded to "no conversation content; one preferences key". Reworded rather than quietly broken.
+- decided: the pref value is parsed as untrusted input (booleans only in and out), because the key shares an origin with chatgpt.com's own scripts and they can write to it
+- rejected: GM_setValue, which would keep prefs out of the page's reach but requires changing `@grant none` and moves the whole script into Tampermonkey's sandbox context — a behaviour change across every part of the script for one boolean
+- rejected: a rail toggle, because it saves 9.6% of export size, protects nothing, and costs a second export layout for every rail assertion to run against
+- rejected: a settings panel. Two checkboxes sit in the export modal, where the choice is made.
+- decided: the loader carries a standing "keep this tab visible" warning, and a run that saw `document.hidden` adds that as a reason when the capture comes back incomplete. Advisory only; it never changes what is captured. Browsers throttle background timers and suspend the rendering work ChatGPT's lazy loading depends on.
+- broke/fixed: `localStorage` is unavailable on `file://` in Chromium (opaque origin), so the persistence assertions silently could not run against the existing fixture. Added a ~15-line `node:http` static server in e2e.test.js and pointed that one section at `http://127.0.0.1:<port>`.
+- measured: userscript 45.3 KB -> 52.4 KB (+7.1 KB, +15.7%). Export size unchanged at 284.7 KB with defaults on; the rail is still 27.4 KB / 9.6%. Tests 56 -> 79 unit assertions and 28 -> 41 e2e.
+- open: timestamps still blocked on a live DOM sample in docs/ref/
+- open: whether test/ stays, and whether the conventions should move into a CLAUDE.md — asked twice now, still unanswered
+- next: user exports once with defaults and once with both boxes unticked, and confirms the second file carries no URL and no title anywhere including the filename
