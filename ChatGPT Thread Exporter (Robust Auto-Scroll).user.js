@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      4.1
+// @version      4.2
 // @description  Exports full ChatGPT threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
@@ -192,7 +192,7 @@
         const code = pre.querySelector('code');
         const target = code || pre;
         const clone = target.cloneNode(true);
-        clone.querySelectorAll('button, svg, .custom-copy-btn').forEach(el => el.remove());
+        clone.querySelectorAll('button, svg').forEach(el => el.remove());
         return clone.textContent.replace(/\s+$/, '');
     }
 
@@ -208,7 +208,6 @@
 
         const tag = node.tagName;
         if (SKIP_TAGS.has(tag)) return '';
-        if (node.classList && node.classList.contains('custom-copy-btn')) return '';
         if (node.getAttribute && node.getAttribute('role') === 'button') return '';
 
         switch (tag) {
@@ -319,7 +318,7 @@
         }
         // Fallback: the old behaviour. Lossy, but better than dropping the turn.
         const clone = element.cloneNode(true);
-        clone.querySelectorAll('.custom-copy-btn, button, svg, img').forEach(el => el.remove());
+        clone.querySelectorAll('button, svg, img').forEach(el => el.remove());
         return tidyMd(clone.textContent || '');
     }
 
@@ -1087,50 +1086,17 @@ html.js .wrap { padding-right: 44px; }
 
     // -----------------------------------------------------------------------
     // In-page decorations
+    //
+    // A per-message Copy button used to be added here. It was removed in v4.2:
+    // absolutely positioned at the message's top-right corner, it landed on the
+    // first line of text on any turn that runs full width, and ChatGPT already
+    // has native copy on both roles. Anchoring it also meant writing
+    // style.position onto ChatGPT's own elements, which was the only place this
+    // script mutated the site's DOM rather than adding to it.
+    //
+    // What is left is one fixed-position button of our own, so a refresh is a
+    // single querySelector rather than a walk over every message on the page.
     // -----------------------------------------------------------------------
-
-    const decorated = new WeakSet();
-
-    function addCopyButtons() {
-        const messages = document.querySelectorAll(MSG_SELECTOR);
-        for (let i = 0; i < messages.length; i++) {
-            const msg = messages[i];
-            // The old version re-queried and re-ran getComputedStyle on every
-            // message on every mutation. ChatGPT emits a mutation per streamed
-            // token, so this is the difference between a few hundred style
-            // resolutions and a few hundred thousand.
-            if (decorated.has(msg)) continue;
-            decorated.add(msg);
-            if (msg.querySelector('.custom-copy-btn')) continue;
-
-            const btn = el('button', {
-                'class': 'custom-copy-btn',
-                type: 'button',
-                text: 'Copy',
-                style: 'position:absolute; top:5px; right:5px; z-index:10; padding:2px 8px;' +
-                    'font-size:12px; background:#10a37f; color:#fff; border:none;' +
-                    'border-radius:4px; cursor:pointer; opacity:0.8;'
-            });
-            btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
-            btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.8'; });
-            btn.addEventListener('click', e => {
-                e.stopPropagation();
-                const text = extractContent(msg);
-                const done = ok => {
-                    btn.textContent = ok ? 'Copied!' : 'Failed';
-                    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
-                };
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    navigator.clipboard.writeText(text).then(() => done(true), () => done(false));
-                } else {
-                    done(false);
-                }
-            });
-
-            if (window.getComputedStyle(msg).position === 'static') msg.style.position = 'relative';
-            msg.appendChild(btn);
-        }
-    }
 
     function addExportButton() {
         if (document.querySelector('.export-chat-btn')) return;
@@ -1151,7 +1117,6 @@ html.js .wrap { padding-right: 44px; }
 
     function refresh() {
         scheduled = false;
-        addCopyButtons();
         addExportButton();
     }
 
