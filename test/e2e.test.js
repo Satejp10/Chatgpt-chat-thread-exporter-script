@@ -27,7 +27,9 @@ const ok = (name, cond, extra) => {
   if (!cond) fails++;
 };
 
-async function capture(browser, src, label) {
+// prefs: null leaves the export modal's checkboxes at their defaults; otherwise
+// each false field is unticked before the download is triggered.
+async function capture(browser, src, label, prefs) {
   const ctx = await browser.newContext({ acceptDownloads: true });
   const page = await ctx.newPage();
   const requests = [];
@@ -36,9 +38,16 @@ async function capture(browser, src, label) {
   await page.goto(FIXTURE);
   await page.evaluate(src);
   await page.click('.export-chat-btn');
+  if (prefs) {
+    if (prefs.url === false) await page.uncheck('#cge-pref-url');
+    if (prefs.title === false) await page.uncheck('#cge-pref-title');
+  }
   const btn = page.locator('button.html-btn, button:has-text("Download HTML")').first();
   const dl = page.waitForEvent('download', { timeout: 120000 });
   await btn.click();
+  // The loader is built synchronously by the click handler, so this reads it
+  // mid-capture, which is the only time the tab-visibility warning is on screen.
+  const loaderText = await page.locator('#chat-export-loader').innerText().catch(() => '');
   const download = await dl;
   const out = path.join(HERE, 'out-' + label + '.html');
   await download.saveAs(out);
@@ -46,10 +55,28 @@ async function capture(browser, src, label) {
   await ctx.close();
   return {
     html,
+    loaderText,
     filename: download.suggestedFilename(),
     count: (html.match(/class="message /g) || []).length,
     requests
   };
+}
+
+// localStorage is unavailable on file:// (Chromium treats it as an opaque
+// origin), so the persistence checks need a real origin to run against.
+function serveTestDir() {
+  const http = require('http');
+  const server = http.createServer((req, res) => {
+    const name = path.basename(decodeURIComponent(req.url.split('?')[0])) || 'fixture.html';
+    fs.readFile(path.join(HERE, name), (err, buf) => {
+      if (err) { res.writeHead(404); res.end('not found'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(buf);
+    });
+  });
+  return new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
+  });
 }
 
 (async () => {
@@ -73,6 +100,22 @@ async function capture(browser, src, label) {
   ok('export run made no network requests', after.requests.length === 0, after.requests.join(', '));
   ok('links preserved in export', after.html.includes('<a href="https://example.com/ref/1"'), '');
   ok('code fences preserved in export', after.html.includes('<pre><code class="lang-js">'), '');
+  ok('capture warns about backgrounding the tab',
+    /keep this tab visible/i.test(after.loaderText), JSON.stringify(after.loaderText));
+
+  // ------------------------------------------------------- privacy toggles
+  console.log('\n=== Export with the url and title withheld ===');
+  ok('source line present when the url is included', after.html.includes('Source:'), '');
+  ok('title present when included', after.html.includes('Fake lazy-loading thread'), '');
+
+  const bare = await capture(browser, newSrc, 'bare', { url: false, title: false });
+  console.log('  captured ' + bare.count + ' / 120 messages  (file: ' + bare.filename + ')');
+  ok('withholding fields does not affect capture', bare.count === 120, 'got ' + bare.count);
+  ok('no Source line when the url is withheld', !bare.html.includes('Source:'), '');
+  ok('no url anywhere when withheld', !bare.html.includes('fixture.html'), '');
+  ok('no title anywhere when withheld', !bare.html.includes('Fake lazy-loading thread'), '');
+  ok('filename falls back to date and time',
+    /^chatgpt-export-\d{4}-\d{2}-\d{2}-\d{6}\.html$/.test(bare.filename), bare.filename);
 
   // ------------------------------------------------------------------ export
   console.log('\n=== Exported file behaviour (opened from disk) ===');
@@ -184,6 +227,46 @@ async function capture(browser, src, label) {
   ok('message text is readable without JS',
     await njPage.evaluate(() => document.getElementById('m-0000').innerText.includes('Message number 0')));
   await njCtx.close();
+
+  // -------------------------------------------------- preference persistence
+  console.log('\n=== Preference persistence (http origin) ===');
+  const { server, port } = await serveTestDir();
+  const pCtx = await browser.newContext();
+  const pPage = await pCtx.newPage();
+  const openModal = async () => {
+    await pPage.evaluate(newSrc);
+    await pPage.click('.export-chat-btn');
+  };
+  const boxes = async () => ({
+    url: await pPage.isChecked('#cge-pref-url'),
+    title: await pPage.isChecked('#cge-pref-title')
+  });
+
+  await pPage.goto('http://127.0.0.1:' + port + '/fixture.html');
+  await openModal();
+  const initial = await boxes();
+  ok('both fields default to included', initial.url && initial.title, JSON.stringify(initial));
+
+  await pPage.uncheck('#cge-pref-url');
+  const written = await pPage.evaluate(() => localStorage.getItem('cge-export-prefs'));
+  ok('unticking is written to storage', written === '{"url":false,"title":true}', String(written));
+
+  await pPage.reload();
+  await openModal();
+  const restored = await boxes();
+  ok('the choice survives a reload', restored.url === false && restored.title === true, JSON.stringify(restored));
+
+  // The key lives in chatgpt.com's own localStorage, so a value the page wrote
+  // must not be able to reach the renderer as anything but a boolean.
+  await pPage.evaluate(() => localStorage.setItem('cge-export-prefs', '{"url":"<script>","title":1}'));
+  await pPage.reload();
+  await openModal();
+  const hostile = await boxes();
+  ok('non-boolean stored values fall back to the defaults',
+    hostile.url === true && hostile.title === true, JSON.stringify(hostile));
+
+  await pCtx.close();
+  server.close();
 
   await browser.close();
   console.log('\n' + (fails ? fails + ' FAILURES' : 'all checks passed'));

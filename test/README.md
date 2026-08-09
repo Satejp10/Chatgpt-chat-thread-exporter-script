@@ -18,7 +18,7 @@ system paths). Override with `CHROMIUM_PATH=/path/to/chrome`.
 | File | Covers |
 |---|---|
 | `unit.test.js` | HTML escaping against XSS payloads, URL scheme policy, code-fence handling, filename sanitising, renderer output |
-| `e2e.test.js` | Real capture run against a synthetic lazy-loading thread; then the exported file opened from disk: no network, no script execution, rail behaviour, keyboard nav, tooltip, toggle persistence, and the no-JavaScript fallback |
+| `e2e.test.js` | Real capture run against a synthetic lazy-loading thread; the same run with the URL and title withheld; then the exported file opened from disk: no network, no script execution, rail behaviour, keyboard nav, tooltip, toggle persistence, and the no-JavaScript fallback. Finally the export preferences over an http origin, since `localStorage` does not work on `file://` |
 | `trusted-types.test.js` | Whether the in-page UI survives a page enforcing `require-trusted-types-for 'script'` |
 | `measure.js` | Export size, the nav rail's share of it, and render time on a 300-message thread |
 | `fixture.html` | Synthetic chat page: virtualised scroll container, lazy-prepended history, and a tall sidebar that a naive scroller search would pick by mistake |

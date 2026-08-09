@@ -20,7 +20,8 @@ const body = raw.slice(raw.indexOf('\n', start) + 1, cut);
 const EXPORTS = [
   'escapeHtml', 'isSafeUrl', 'stripControl', 'sanitizeFilename', 'mdToSafeHtml',
   'makeFence', 'railLabel', 'roleClass', 'roleLabel', 'tidyMd', 'nodeToMd',
-  'renderMarkdown', 'renderHtml', 'EXPORT_CSS', 'EXPORT_JS', 'conversationTitle', 'isoDate'
+  'renderMarkdown', 'renderHtml', 'EXPORT_CSS', 'EXPORT_JS', 'conversationTitle', 'isoDate',
+  'clockSuffix', 'loadPrefs', 'savePrefs', 'defaultPrefs', 'GENERIC_TITLE', 'PREF_KEY'
 ];
 
 const factory = new Function(body + '\n    return { ' + EXPORTS.join(', ') + ' };\n');

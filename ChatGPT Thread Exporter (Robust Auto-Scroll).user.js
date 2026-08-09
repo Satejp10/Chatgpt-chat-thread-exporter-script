@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ChatGPT Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      4.0
-// @description  Exports full ChatGPT threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, and makes zero network requests.
+// @version      4.1
+// @description  Exports full ChatGPT threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -13,8 +13,9 @@
 // Design constraints (see .claude/context/LOG.md):
 //   * No network requests, ever. No fetch/XHR/beacon/WebSocket/@connect.
 //   * No eval, no Function(), no remote code, no auto-update.
-//   * No persistence of conversation content. Nothing is stored outside the
-//     download the user explicitly asks for.
+//   * No persistence of conversation content. The only value ever stored is
+//     the two-boolean export preference under 'cge-export-prefs'; the download
+//     the user explicitly asks for is the only place content goes.
 //   * No build step, no dependencies, single file.
 //   * Never assign to innerHTML: the page may enforce Trusted Types, and the
 //     export must be safe to open from disk.
@@ -77,15 +78,71 @@
         return s;
     }
 
+    // Stands in for the conversation title whenever the real one is withheld,
+    // and doubles as the fallback for a chat that has no title yet.
+    const GENERIC_TITLE = 'ChatGPT export';
+
     function conversationTitle() {
         const raw = (document.title || '').replace(/\s*[|\-–—]\s*ChatGPT\s*$/i, '').trim();
-        if (!raw || /^chatgpt$/i.test(raw)) return 'ChatGPT export';
+        if (!raw || /^chatgpt$/i.test(raw)) return GENERIC_TITLE;
         return raw;
     }
 
     function isoDate(d) {
         const p = n => String(n).padStart(2, '0');
         return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+
+    function clockSuffix(d) {
+        const p = n => String(n).padStart(2, '0');
+        return p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    }
+
+    // -----------------------------------------------------------------------
+    // Export preferences
+    //
+    // Two booleans deciding whether the conversation's URL and title are
+    // written into the export. No conversation content is ever stored here.
+    //
+    // This lives in chatgpt.com's own localStorage, which the page's scripts
+    // can also write to, so the value is treated as untrusted input: only
+    // fields that are already booleans are accepted, and only booleans are
+    // written back. A tampered or corrupt entry can therefore never reach a
+    // renderer as anything other than true or false.
+    // -----------------------------------------------------------------------
+
+    const PREF_KEY = 'cge-export-prefs';
+    const PREF_FIELDS = ['url', 'title'];
+
+    function defaultPrefs() {
+        // Provenance is on by default; leaving it out is the deliberate act.
+        return { url: true, title: true };
+    }
+
+    function loadPrefs() {
+        const prefs = defaultPrefs();
+        try {
+            const stored = JSON.parse(localStorage.getItem(PREF_KEY));
+            if (stored && typeof stored === 'object') {
+                PREF_FIELDS.forEach(k => {
+                    if (typeof stored[k] === 'boolean') prefs[k] = stored[k];
+                });
+            }
+        } catch (e) {
+            // Disabled storage, private mode, corrupt JSON, or no localStorage
+            // binding at all: the defaults stand and the export still runs.
+        }
+        return prefs;
+    }
+
+    function savePrefs(prefs) {
+        try {
+            const out = {};
+            PREF_FIELDS.forEach(k => { out[k] = !!(prefs && prefs[k]); });
+            localStorage.setItem(PREF_KEY, JSON.stringify(out));
+        } catch (e) {
+            // Not being able to remember the choice must not block the export.
+        }
     }
 
     const ROLE_LABELS = { user: 'User', assistant: 'Assistant', system: 'System', tool: 'Tool' };
@@ -329,9 +386,33 @@
         box.style.cssText = 'position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);' +
             'background:rgba(30,30,30,0.95); color:#fff; padding:20px 30px; border-radius:8px;' +
             'z-index:2147483000; font-size:15px; font-family:sans-serif; text-align:center;' +
-            'min-width:280px; box-shadow:0 4px 12px rgba(0,0,0,0.3); white-space:pre-line;';
-        box.textContent = 'Loading conversation...';
+            'min-width:280px; max-width:360px; box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+
+        const status = el('div', { style: 'white-space:pre-line;', text: 'Loading conversation...' });
+
+        // Browsers throttle timers in a background tab and suspend the
+        // rendering work that ChatGPT's lazy loading is driven by, so a capture
+        // run with the tab hidden can stall and come back short.
+        const note = el('div', {
+            style: 'margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.18);' +
+                'font-size:12.5px; line-height:1.5; color:#ffd48a;',
+            text: 'Keep this tab visible until it finishes. Switching tabs or minimising the ' +
+                'window throttles the page, which can stall the capture and leave the export short.'
+        });
+
+        box.appendChild(status);
+        box.appendChild(note);
         document.body.appendChild(box);
+
+        // Advisory only. It records that the tab went hidden so an incomplete
+        // capture can say why, and it never changes what gets captured.
+        let hidden = !!document.hidden;
+        const onVisibility = () => { if (document.hidden) hidden = true; };
+        document.addEventListener('visibilitychange', onVisibility);
+
+        box.setStatus = text => { status.textContent = text; };
+        box.wasHidden = () => hidden;
+        box.stopWatching = () => document.removeEventListener('visibilitychange', onVisibility);
         return box;
     }
 
@@ -344,7 +425,7 @@
 
         let emptySkipped = 0;
 
-        const say = text => { if (loader) loader.textContent = text; };
+        const say = text => { if (loader && loader.setStatus) loader.setStatus(text); };
 
         const collect = () => {
             let added = 0;
@@ -423,6 +504,11 @@
         if (!reachedBottom) reasons.push('the bottom of the thread was never reached');
         if (hitCeiling) reasons.push('the scroll-step ceiling was hit');
         if (emptySkipped) reasons.push(emptySkipped + ' turn(s) yielded no text');
+        // Listed last, and only when something actually went wrong: it is the
+        // likely cause of the reasons above rather than a finding of its own.
+        if (!complete && loader && loader.wasHidden && loader.wasHidden()) {
+            reasons.push('the tab was hidden during capture, which throttles loading');
+        }
 
         return {
             messages,
@@ -457,8 +543,11 @@
     function renderMarkdown(messages, stats, meta) {
         const lines = [];
         lines.push('---');
-        lines.push('title: ' + JSON.stringify(meta.title));
-        lines.push('source: ' + JSON.stringify(meta.url));
+        // A withheld field is left out of the frontmatter entirely. It is never
+        // emitted empty and never as null: absent must mean absent, so a parser
+        // cannot mistake a redaction for a value.
+        if (meta.title) lines.push('title: ' + JSON.stringify(meta.title));
+        if (meta.url) lines.push('source: ' + JSON.stringify(meta.url));
         lines.push('exported: ' + stats.capturedAt.toISOString());
         lines.push('messages: ' + stats.count);
         lines.push('capture: ' + (stats.complete ? 'complete' : 'possibly-truncated'));
@@ -468,7 +557,7 @@
         lines.push('generator: ChatGPT Thread Exporter');
         lines.push('---');
         lines.push('');
-        lines.push('# ' + meta.title.replace(/\n/g, ' '));
+        lines.push('# ' + (meta.title || GENERIC_TITLE).replace(/\n/g, ' '));
         lines.push('');
         if (!stats.complete) {
             lines.push('> **Capture may be incomplete.** ' + stats.reasons.join('; ') + '.');
@@ -749,7 +838,7 @@ html.js .wrap { padding-right: 44px; }
     ].join('\n');
 
     function renderHtml(messages, stats, meta) {
-        const title = escapeHtml(meta.title);
+        const title = escapeHtml(meta.title || GENERIC_TITLE);
         const iso = stats.capturedAt.toISOString();
 
         const rail = [];
@@ -779,9 +868,12 @@ html.js .wrap { padding-right: 44px; }
             '<p class="warn-box"><strong>Capture may be incomplete.</strong> ' +
             escapeHtml(stats.reasons.join('; ')) + '. Re-run the export from the top of the thread.</p>';
 
-        const sourceLink = isSafeUrl(meta.url)
-            ? '<a href="' + escapeHtml(meta.url) + '" rel="noopener noreferrer">' + escapeHtml(meta.url) + '</a>'
-            : escapeHtml(meta.url);
+        // Withheld means the line is not written at all, rather than written
+        // blank: an empty "Source:" would still tell a reader one existed.
+        const sourceBlock = !meta.url ? '' :
+            '<p class="meta">Source: ' + (isSafeUrl(meta.url)
+                ? '<a href="' + escapeHtml(meta.url) + '" rel="noopener noreferrer">' + escapeHtml(meta.url) + '</a>'
+                : escapeHtml(meta.url)) + '</p>\n';
 
         return '<!DOCTYPE html>\n' +
             '<html lang="en">\n<head>\n' +
@@ -805,7 +897,7 @@ html.js .wrap { padding-right: 44px; }
             '<p class="meta">Exported <time datetime="' + escapeHtml(iso) + '">' +
             escapeHtml(stats.capturedAt.toLocaleString()) + '</time> · ' +
             stats.count + ' messages · capture: ' + flag + '</p>\n' +
-            '<p class="meta">Source: ' + sourceLink + '</p>\n' +
+            sourceBlock +
             warning +
             '</header>\n<main>\n' +
             body.join('\n') +
@@ -818,15 +910,26 @@ html.js .wrap { padding-right: 44px; }
     // Export flow
     // -----------------------------------------------------------------------
 
-    async function exportChat(format, loader) {
-        const meta = { title: conversationTitle(), url: location.href };
+    async function exportChat(format, loader, prefs) {
+        const p = prefs || defaultPrefs();
+        // Resolved here rather than inside the renderers, so those stay pure
+        // functions of meta. null means "leave this out of the file".
+        const meta = {
+            title: p.title ? conversationTitle() : null,
+            url: p.url ? location.href : null
+        };
         const { messages, stats } = await captureMessages(loader);
 
         if (!messages.length) {
             return { stats, downloaded: false, reason: 'No messages were found on this page.' };
         }
 
-        const base = sanitizeFilename(meta.title, 'chatgpt-export') + '-' + isoDate(stats.capturedAt);
+        // Without the title there is nothing left to tell two exports apart, so
+        // the time is added. Date alone would collide on the second export of
+        // the day and leave the browser to append " (1)".
+        const base = meta.title
+            ? sanitizeFilename(meta.title, 'chatgpt-export') + '-' + isoDate(stats.capturedAt)
+            : 'chatgpt-export-' + isoDate(stats.capturedAt) + '-' + clockSuffix(stats.capturedAt);
 
         if (format === 'markdown') {
             downloadFile(renderMarkdown(messages, stats, meta), base + '.md', 'text/markdown;charset=utf-8');
@@ -857,6 +960,20 @@ html.js .wrap { padding-right: 44px; }
     const BTN_BASE = 'padding:10px 18px; font-size:14px; border:none; border-radius:6px;' +
         'cursor:pointer; color:#fff; margin:5px; font-family:inherit;';
 
+    // Returns { input, node }. The caller reads input.checked at download time.
+    function prefCheckbox(id, label, checked) {
+        const input = el('input', { type: 'checkbox', id: id, style: 'margin:0 8px 0 0;' });
+        // A property, not an attribute: setAttribute('checked') sets the
+        // element's *default* state, which is not what gets read back.
+        input.checked = checked;
+        const node = el('label', {
+            'for': id,
+            style: 'display:flex; align-items:center; cursor:pointer;'
+        }, [input]);
+        node.appendChild(document.createTextNode(label));
+        return { input: input, node: node };
+    }
+
     function showExportModal() {
         if (document.querySelector('.export-modal-overlay')) return;
 
@@ -877,11 +994,34 @@ html.js .wrap { padding-right: 44px; }
         const closeBtn = el('button', { type: 'button', style: BTN_BASE + 'background:#6b7280;', text: 'Cancel' });
         const status = el('p', { style: 'color:#57606a; font-size:13px; margin:14px 0 0; white-space:pre-line;' });
 
+        // Two identifying fields, each optional. They sit here rather than in a
+        // settings panel because the moment you choose a format is the moment
+        // you know whether this particular export is one you will share.
+        const stored = loadPrefs();
+        const urlPref = prefCheckbox('cge-pref-url', 'Include the conversation URL', stored.url);
+        const titlePref = prefCheckbox('cge-pref-title', 'Include the conversation title', stored.title);
+        const readPrefs = () => ({ url: urlPref.input.checked, title: titlePref.input.checked });
+        [urlPref, titlePref].forEach(p => {
+            p.input.addEventListener('change', () => savePrefs(readPrefs()));
+        });
+
+        const prefBox = el('div', {
+            style: 'display:flex; flex-direction:column; gap:8px; text-align:left;' +
+                'margin:0 0 16px; padding:12px 14px; border:1px solid #d0d7de;' +
+                'border-radius:8px; font-size:13px; color:#24292f;'
+        }, [urlPref.node, titlePref.node]);
+        prefBox.appendChild(el('p', {
+            style: 'margin:2px 0 0; color:#57606a; font-size:12px; line-height:1.45;',
+            text: 'Unticked fields are left out of the file entirely. Without the title, ' +
+                'the filename falls back to the date and time.'
+        }));
+
         modal.appendChild(el('h3', { style: 'margin:0 0 8px; font-size:18px;', text: 'Export Chat Thread' }));
         modal.appendChild(el('p', {
             style: 'color:#57606a; margin:0 0 18px; font-size:13px;',
             text: 'Auto-scrolls the whole thread first, then reports whether the capture was complete.'
         }));
+        modal.appendChild(prefBox);
         modal.appendChild(mdBtn);
         modal.appendChild(htmlBtn);
         modal.appendChild(el('br'));
@@ -905,12 +1045,16 @@ html.js .wrap { padding-right: 44px; }
             let result = null;
             let error = null;
             try {
-                result = await exportChat(format, loader);
+                // Read from the boxes, not from storage: an untick made a
+                // second ago must apply to this export.
+                result = await exportChat(format, loader, readPrefs());
             } catch (err) {
                 error = err;
             } finally {
                 // Guaranteed: a throw mid-capture used to leave this overlay
-                // pinned over the page with no way back except a reload.
+                // pinned over the page with no way back except a reload. The
+                // visibility listener rides on the same guarantee.
+                loader.stopWatching();
                 loader.remove();
                 overlay.style.visibility = '';
                 buttons.forEach(b => { b.disabled = false; b.style.opacity = ''; });
