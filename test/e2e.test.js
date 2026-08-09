@@ -243,7 +243,24 @@ function serveTestDir() {
   });
 
   await pPage.goto('http://127.0.0.1:' + port + '/fixture.html');
-  await openModal();
+  await pPage.evaluate(newSrc);
+  await pPage.waitForTimeout(300);
+
+  // The per-message Copy button was removed in v4.2: it covered the first line
+  // of any full-width turn, and anchoring it meant writing style.position onto
+  // the site's own elements. The fixture has no buttons of its own, so anything
+  // found inside a message came from us.
+  const injected = await pPage.evaluate(() =>
+    document.querySelectorAll('[data-message-author-role] button').length);
+  ok('nothing is injected into page messages', injected === 0, 'found ' + injected);
+  const restyled = await pPage.evaluate(() =>
+    [].filter.call(document.querySelectorAll('[data-message-author-role]'),
+      m => m.getAttribute('style')).length);
+  ok('page messages are not restyled', restyled === 0, 'found ' + restyled);
+  ok('the export button is still added',
+    await pPage.evaluate(() => !!document.querySelector('.export-chat-btn')));
+
+  await pPage.click('.export-chat-btn');
   const initial = await boxes();
   ok('both fields default to included', initial.url && initial.title, JSON.stringify(initial));
 

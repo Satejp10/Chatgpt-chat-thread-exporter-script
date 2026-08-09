@@ -77,3 +77,17 @@ Entry format:
 - open: timestamps still blocked on a live DOM sample in docs/ref/
 - open: whether test/ stays, and whether the conventions should move into a CLAUDE.md — asked twice now, still unanswered
 - next: user exports once with defaults and once with both boxes unticked, and confirms the second file carries no URL and no title anywhere including the filename
+
+## 2026-08-09 | session 4 | web
+- did: v4.2 — removed the per-message Copy button the script injected into chatgpt.com
+- found: a real defect no test had caught. The button was `position:absolute; top:5px; right:5px` inside each message. User bubbles have a rounded gutter so it landed in whitespace, but assistant turns run full width, so it sat on top of the first line of text. Present since v3.0; invisible to the suite because the synthetic fixture's messages are narrow. Found by the user from a screenshot of the live site.
+- correction to the v4.0 audit: item P2-c treated addCopyButtons purely as a performance problem (the mutation storm) and rated the debounce a fix. The function had a second, visual defect that the audit did not look for, because the audit never rendered the script against a real thread.
+- decided: remove rather than fix, because ChatGPT has native copy on both roles and also yields Markdown, so the feature was duplicating the site. Removal also deletes the only place this script wrote to ChatGPT's own elements (`msg.style.position = 'relative'`, needed solely to anchor the button) and turns a refresh from a walk over every message into one querySelector.
+- rejected: hover-only reveal plus repositioning, which keeps the DOM mutation and the per-message work to preserve a redundant feature
+- did: dropped the now-dead `.custom-copy-btn` selectors from the three extraction paths; `button` already covered them
+- did: added two e2e regression guards so this cannot come back silently — no buttons inside `[data-message-author-role]`, and no inline style written onto page messages. The fixture has no buttons of its own, so anything found came from us.
+- note: the exported HTML keeps its own copy buttons. Different context: an offline file has no native copy to fall back on.
+- measured: userscript 52.4 KB -> 51.0 KB. Export size unchanged. 79 unit assertions, 44 e2e (was 41).
+- open: timestamps still blocked on a live DOM sample in docs/ref/
+- open: whether test/ stays, and whether the conventions should move into a CLAUDE.md — asked three times now, still unanswered
+- next: user confirms on the live site that no Copy buttons appear on messages and the Export Chat button still does
