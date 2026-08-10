@@ -44,11 +44,16 @@ frontmatter carry `capture: complete` or `capture: possibly-truncated` with the
 reason. If it is not complete, the exporter says so before you close the dialog.
 An archive that quietly drops messages is worse than no archive.
 
+**Scroll the thread yourself first.** Go to the very top, wait for the older
+messages to appear, then come back down. The exporter does this on its own, but
+a thread the browser has already rendered captures faster and is far less likely
+to come back short. The export dialog says so before you pick a format.
+
 **Keep the tab visible while it runs.** Browsers throttle timers in background
-tabs and suspend the rendering work that ChatGPT's lazy loading depends on, so
-a capture with the tab hidden can stall and come back short. Nothing is lost
-silently if it does: the export is flagged `possibly-truncated`, and a run that
-detected the tab going hidden says so in the reason.
+tabs and suspend the rendering work that lazy loading depends on, so a capture
+with the tab hidden can stall and come back short. Nothing is lost silently if
+it does: the export is flagged `possibly-truncated`, and a run that detected the
+tab going hidden says so in the reason.
 
 ## What goes in the file
 
@@ -80,6 +85,29 @@ declared count.
 
 Both preserve link URLs, fenced code blocks with their language, lists, tables
 and blockquotes. Images and attachments are not exported, by design.
+
+## Timestamps
+
+Whatever the page renders is captured. Nothing else is.
+
+Both sites show a date and time at the start of a thread, and separators between
+later turn groups. Those are read as written and travel into the export: a
+`started_label` in the Markdown frontmatter, a *Thread starts* line in the HTML
+header, and a small time beside each turn that had one.
+
+They are **not resolved**. A label reading `Yesterday 8:30 PM` is exported as
+that string, because turning it into a date means computing it against the
+capture time, and a computed timestamp is one the page never showed. The export
+time sits directly above it as an absolute ISO value, so anchoring a relative
+label is a subtraction you can do yourself and verify.
+
+Where the page also carries a machine-readable value, a `<time datetime>` or a
+`title` attribute holding a full date, that is copied alongside as
+`started_exact` and as the hover title on each turn. Copied, not parsed.
+
+A turn with no rendered label gets no timestamp at all, and never inherits one
+from the turn above it. "The page showed nothing here" and "the page showed the
+same thing here" are different claims, and only one of them is true.
 
 ## Artifacts and embedded views
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.0
+// @version      5.1
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
@@ -224,6 +224,112 @@
     function artifactPlaceholder(kind, name) {
         artifactCount++;
         return '\n\n> [' + kind + ' not exported' + (name ? ': ' + name : '') + ']\n\n';
+    }
+
+    // -----------------------------------------------------------------------
+    // Timestamps
+    //
+    // Transcribed, never synthesized. The page renders a date and time at the
+    // start of a thread, and separators between later turn groups. Whatever it
+    // renders is captured exactly as written.
+    //
+    // A relative label ("Yesterday 8:30 PM") is exported as that string and is
+    // NOT resolved into a date. Resolving it against the capture time would be
+    // inventing a fact the page never showed, which the never-synthesize rule
+    // forbids. The export header already carries the absolute capture time, so
+    // a reader can anchor a relative label themselves.
+    //
+    // Where the page also holds a machine-readable value, a <time datetime> or
+    // a title attribute, that is captured alongside as `exact`. It is copied,
+    // not parsed: whatever the attribute says is what gets written.
+    //
+    // A turn with no rendered label gets no timestamp. Labels are never
+    // inherited from the turn above, because "the page showed nothing here" and
+    // "the page showed the same thing here" are different claims.
+    // -----------------------------------------------------------------------
+
+    const MONTHS = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*';
+    const WEEKDAYS = '(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*';
+    const CLOCK = '\\d{1,2}[:.]\\d{2}(?:\\s*[ap]\\.?m\\.?)?';
+    const AT = '(?:\\s*(?:at|,)\\s*)?';
+
+    const TIME_LABEL_RES = [
+        new RegExp('^(?:today|yesterday)' + AT + '(?:' + CLOCK + ')?$', 'i'),
+        new RegExp('^' + WEEKDAYS + AT + '(?:' + CLOCK + ')?$', 'i'),
+        new RegExp('^' + MONTHS + '\\s+\\d{1,2}(?:,?\\s*\\d{4})?' + AT + '(?:' + CLOCK + ')?$', 'i'),
+        new RegExp('^\\d{1,2}\\s+' + MONTHS + '(?:,?\\s*\\d{4})?' + AT + '(?:' + CLOCK + ')?$', 'i'),
+        new RegExp('^\\d{4}-\\d{2}-\\d{2}(?:[ T]' + CLOCK + ')?$', 'i'),
+        new RegExp('^\\d{1,2}[\\/.]\\d{1,2}[\\/.]\\d{2,4}' + AT + '(?:' + CLOCK + ')?$', 'i'),
+        new RegExp('^' + CLOCK + '$', 'i')
+    ];
+
+    // Long enough for "Wednesday, September 10, 2026 at 11:45 PM", short enough
+    // that a paragraph opening with a date cannot pass as a separator.
+    const MAX_LABEL_LEN = 48;
+    const LABEL_LOOKBACK_SIBLINGS = 6;
+    // Deep rather than shallow. The message node can sit several levels inside
+    // its turn container, so a low ceiling means finding nothing at all. Going
+    // deeper is safe because the ascent stops at the previous turn either way,
+    // and the cost of overshooting is a miss, not a wrong attribution.
+    const LABEL_LOOKUP_DEPTH = 8;
+
+    function flatten(text) {
+        return stripControl(String(text == null ? '' : text)).replace(/\s+/g, ' ').trim();
+    }
+
+    function looksLikeTimeLabel(text) {
+        if (!text || text.length > MAX_LABEL_LEN) return false;
+        for (const re of TIME_LABEL_RES) {
+            if (re.test(text)) return true;
+        }
+        return false;
+    }
+
+    // Reads a candidate separator element. Returns { shown, exact } or null.
+    function readTimeLabel(node) {
+        if (!node || node.nodeType !== 1) return null;
+
+        // A <time> element is unambiguous, so it is preferred wherever one
+        // exists and is accepted without the text having to look date-like.
+        const timeEl = node.tagName === 'TIME'
+            ? node
+            : (node.querySelector ? node.querySelector('time') : null);
+        if (timeEl) {
+            const shown = flatten(timeEl.textContent);
+            const exact = flatten(timeEl.getAttribute('datetime'));
+            if (shown || exact) return { shown: shown || exact, exact: exact };
+        }
+
+        const text = flatten(node.textContent);
+        if (!looksLikeTimeLabel(text)) return null;
+
+        const titled = node.getAttribute('title') ||
+            (node.querySelector && node.querySelector('[title]')
+                ? node.querySelector('[title]').getAttribute('title')
+                : '');
+        return { shown: text, exact: flatten(titled) };
+    }
+
+    // Searches a bounded neighbourhood before a turn: previous siblings at each
+    // of a few ancestor levels. Bounded deliberately. An unbounded walk would
+    // eventually find some unrelated date elsewhere on the page and staple it
+    // to the wrong turn, which is worse than reporting no timestamp at all.
+    function findTimeFor(msgEl, msgSel) {
+        let node = msgEl;
+        for (let depth = 0; node && depth < LABEL_LOOKUP_DEPTH; depth++) {
+            let sib = node.previousElementSibling;
+            for (let i = 0; sib && i < LABEL_LOOKBACK_SIBLINGS; i++) {
+                // Stop at the previous turn. Anything beyond it belongs to that
+                // turn's group, not to this one.
+                if (safeMatches(sib, msgSel) ||
+                    (sib.querySelector && sib.querySelector(msgSel))) return null;
+                const hit = readTimeLabel(sib);
+                if (hit) return hit;
+                sib = sib.previousElementSibling;
+            }
+            node = node.parentElement;
+        }
+        return null;
     }
 
     // -----------------------------------------------------------------------
@@ -619,6 +725,9 @@
         const messages = [];
         const seen = new Set();
         artifactCount = 0;
+        // The first label seen while descending, so the topmost one in the
+        // thread: what the page shows as the start of the session.
+        let started = null;
         const ctl = makeScrollCtl(findScroller());
         const startedAt = Date.now();
         const originalTop = ctl.top();
@@ -632,6 +741,7 @@
             // Re-read per pass: on Claude the layout is only pinned once both
             // roles are on screen, which may not be true at the first pass.
             const idAttr = layout().idAttr;
+            const msgSel = messageSelector(layout());
             const nodes = listMessages();
             for (let i = 0; i < nodes.length; i++) {
                 const msg = nodes[i].el;
@@ -646,7 +756,11 @@
                 seen.add(id);
                 const text = extractContent(msg);
                 if (!text) { emptySkipped++; continue; }
-                messages.push({ id, role, text });
+                // Read once, on first sight. The neighbourhood is still mounted
+                // now; after the scroller moves on it may not be.
+                const time = findTimeFor(msg, msgSel);
+                if (time && !started) started = time;
+                messages.push({ id, role, text, time });
                 added++;
             }
             return added;
@@ -721,6 +835,8 @@
                 count: messages.length,
                 emptySkipped,
                 artifacts: artifactCount,
+                started,
+                timestamped: messages.filter(m => m.time).length,
                 app: SITE.label,
                 layout: layout().id,
                 complete,
@@ -765,6 +881,14 @@
         // Only written when there were any, so its presence means something is
         // genuinely missing. A zero line would be noise on every other export.
         if (stats.artifacts) lines.push('artifacts_not_exported: ' + stats.artifacts);
+        // Copied from the page verbatim. `started` may be relative ("Yesterday
+        // 8:30 PM"); resolve it against `exported` above if you need a date.
+        // It is deliberately not resolved here.
+        if (stats.started) {
+            lines.push('started_label: ' + JSON.stringify(stats.started.shown));
+            if (stats.started.exact) lines.push('started_exact: ' + JSON.stringify(stats.started.exact));
+        }
+        if (stats.timestamped) lines.push('timestamped_messages: ' + stats.timestamped);
         lines.push('app: ' + JSON.stringify(stats.app));
         lines.push('generator: Chat Thread Exporter');
         lines.push('---');
@@ -787,8 +911,10 @@
             // verifiable: a parser can check they run 1..N against the `messages`
             // count above. Message text can imitate a heading, but it cannot
             // produce a correctly numbered monotonic sequence.
-            lines.push('<!-- msg:' + n + ' role:' + roleClass(msg.role) + ' -->');
-            lines.push('## [' + n + '] ' + roleLabel(msg.role));
+            const t = msg.time;
+            lines.push('<!-- msg:' + n + ' role:' + roleClass(msg.role) +
+                (t ? ' time:' + JSON.stringify(t.exact || t.shown) : '') + ' -->');
+            lines.push('## [' + n + '] ' + roleLabel(msg.role) + (t ? ' (' + t.shown + ')' : ''));
             lines.push('');
             lines.push(msg.text);
             lines.push('');
@@ -853,6 +979,9 @@ header.export-head h1 { font-size: 1.5em; margin: 0 0 6px; word-wrap: break-word
 .message.user { background: #eef2ff; border-color: #d1d8ff; }
 .message:target { outline: 2px solid #10a37f; outline-offset: 2px; }
 .message h2 { margin: 0; font-size: 0.95em; color: #57606a; font-weight: 600; letter-spacing: 0.02em; }
+.msg-time { font-weight: 400; letter-spacing: 0; color: #8b949e; margin-left: 8px; font-size: 0.92em; }
+.meta .exact { color: #57606a; }
+.meta .verbatim { color: #8b949e; font-style: italic; }
 .content { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 10px; }
 .content a { color: #0969da; }
 .content code { background: rgba(175,184,193,0.2); padding: 0.15em 0.35em; border-radius: 4px;
@@ -1066,7 +1195,12 @@ html.js .wrap { padding-right: 44px; }
             const cls = roleClass(msg.role);
             body.push(
                 '<article class="message ' + cls + '" id="' + id + '">' +
-                '<h2>' + escapeHtml(roleLabel(msg.role)) + '</h2>' +
+                '<h2>' + escapeHtml(roleLabel(msg.role)) +
+                (msg.time
+                    ? '<span class="msg-time"' +
+                      (msg.time.exact ? ' title="' + escapeHtml(msg.time.exact) + '"' : '') +
+                      '>' + escapeHtml(msg.time.shown) + '</span>'
+                    : '') + '</h2>' +
                 '<button class="copy-btn" type="button">Copy</button>' +
                 '<div class="content">' + mdToSafeHtml(msg.text) + '</div>' +
                 '</article>'
@@ -1088,6 +1222,16 @@ html.js .wrap { padding-right: 44px; }
         // Separate from the capture flag on purpose. A truncated capture means
         // the exporter does not know what it missed; this one means it knows
         // exactly what it missed and left a marker at each spot.
+        // Relative by nature on most pages, and left that way. The absolute
+        // export time sits directly above it, which is the anchor a reader
+        // needs to resolve it.
+        const startedBlock = !stats.started ? '' :
+            '<p class="meta">Thread starts: ' + escapeHtml(stats.started.shown) +
+            (stats.started.exact && stats.started.exact !== stats.started.shown
+                ? ' <span class="exact">(' + escapeHtml(stats.started.exact) + ')</span>'
+                : '') +
+            ' <span class="verbatim">as shown on the page, not resolved</span></p>\n';
+
         const artifactBlock = !stats.artifacts ? '' :
             '<p class="warn-box"><strong>' + stats.artifacts + ' artifact(s) or embedded view(s) ' +
             'were not exported.</strong> Each is marked in place below. Text, links and code ' +
@@ -1122,6 +1266,7 @@ html.js .wrap { padding-right: 44px; }
             '<p class="meta">Exported <time datetime="' + escapeHtml(iso) + '">' +
             escapeHtml(stats.capturedAt.toLocaleString()) + '</time> · ' +
             stats.count + ' messages · capture: ' + flag + '</p>\n' +
+            startedBlock +
             sourceBlock +
             warning +
             artifactBlock +
@@ -1252,11 +1397,35 @@ html.js .wrap { padding-right: 44px; }
 
         modal.appendChild(el('h3', { style: 'margin:0 0 8px; font-size:18px;', text: 'Export Chat Thread' }));
         modal.appendChild(el('p', {
-            style: 'color:#57606a; margin:0 0 18px; font-size:13px;',
+            style: 'color:#57606a; margin:0 0 14px; font-size:13px;',
             text: 'Auto-scrolls the whole ' + SITE.label + ' thread first, then reports whether ' +
                 'the capture was complete. Artifacts and embedded views are not exported; ' +
                 'any found are marked in the file and counted in its header.'
         }));
+
+        // Advisory, and worth the space. The exporter does load the thread on
+        // its own, but a thread the browser has already rendered captures
+        // faster and stalls less, and a hand-scrolled pass is the one reliable
+        // way to see for yourself that the history really did load.
+        const prep = el('div', {
+            style: 'text-align:left; margin:0 0 16px; padding:12px 14px; border-radius:8px;' +
+                'background:#fff8e6; border:1px solid #f0d9a0; font-size:12.5px;' +
+                'line-height:1.5; color:#5c4708;'
+        });
+        prep.appendChild(el('strong', { text: 'Before you export, scroll the thread yourself.' }));
+        prep.appendChild(el('p', {
+            style: 'margin:6px 0 0;',
+            text: 'Scroll to the very top, wait for the older messages to appear, then scroll ' +
+                'back to the bottom. The exporter does this on its own, but a thread that is ' +
+                'already loaded captures faster and is far less likely to come back short.'
+        }));
+        prep.appendChild(el('p', {
+            style: 'margin:6px 0 0;',
+            text: 'Keep this tab visible for the whole run. A hidden tab is throttled by the ' +
+                'browser and the capture can stall.'
+        }));
+        modal.appendChild(prep);
+
         modal.appendChild(prefBox);
         modal.appendChild(mdBtn);
         modal.appendChild(htmlBtn);
