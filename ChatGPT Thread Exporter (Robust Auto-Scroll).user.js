@@ -267,7 +267,11 @@
     // that a paragraph opening with a date cannot pass as a separator.
     const MAX_LABEL_LEN = 48;
     const LABEL_LOOKBACK_SIBLINGS = 6;
-    const LABEL_LOOKUP_DEPTH = 4;
+    // Deep rather than shallow. The message node can sit several levels inside
+    // its turn container, so a low ceiling means finding nothing at all. Going
+    // deeper is safe because the ascent stops at the previous turn either way,
+    // and the cost of overshooting is a miss, not a wrong attribution.
+    const LABEL_LOOKUP_DEPTH = 8;
 
     function flatten(text) {
         return stripControl(String(text == null ? '' : text)).replace(/\s+/g, ' ').trim();
