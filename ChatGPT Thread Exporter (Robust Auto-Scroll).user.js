@@ -1,14 +1,23 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.1
+// @version      5.2
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @match        https://claude.ai/*
+// @exclude      https://chatgpt.com/codex*
+// @exclude      https://chat.openai.com/codex*
+// @exclude      https://claude.ai/code*
 // @grant        none
 // ==/UserScript==
+
+// The @exclude lines above cover the coding surfaces, which share a host with
+// the chat app but are not chat threads. They are backed up by a runtime path
+// check in refresh(), because both sites are single-page apps: navigating from
+// a chat to /code or /codex changes the path without reloading the document,
+// and @exclude is only evaluated at load.
 
 // ---------------------------------------------------------------------------
 // Design constraints (see .claude/context/LOG.md):
@@ -63,6 +72,7 @@
             matches: h => /(^|\.)chatgpt\.com$/.test(h) || /(^|\.)chat\.openai\.com$/.test(h),
             titleTail: /\s*[|\-–—]\s*ChatGPT\s*$/i,
             titleIsEmpty: /^chatgpt$/i,
+            excludePaths: [/^\/codex(?:\/|$)/i],
             layouts: [{
                 id: 'author-role',
                 user: '[data-message-author-role="user"]',
@@ -83,6 +93,7 @@
             matches: h => /(^|\.)claude\.ai$/.test(h),
             titleTail: /\s*[|\-–—\\\/]\s*Claude\s*$/i,
             titleIsEmpty: /^claude$/i,
+            excludePaths: [/^\/code(?:\/|$)/i],
             layouts: [
                 { id: 'testid', user: '[data-testid="user-message"]', assistant: '.font-claude-response' },
                 { id: 'msg-class', user: '[data-testid="user-message"]', assistant: '.font-claude-message' },
@@ -95,6 +106,15 @@
             ]
         }
     ];
+
+    // Checked on every refresh, not once at startup. Both sites are single-page
+    // apps: navigating from a chat to the coding surface changes the path
+    // without a reload, so a one-time check would leave the button behind.
+    function onExcludedPath() {
+        if (!SITE || !SITE.excludePaths) return false;
+        const path = location.pathname || '';
+        return SITE.excludePaths.some(re => re.test(path));
+    }
 
     function pickSite() {
         const host = location.hostname;
@@ -724,6 +744,11 @@
     async function captureMessages(loader) {
         const messages = [];
         const seen = new Set();
+        // Node identity and content identity catch different things: the first
+        // stops re-collecting a node still on screen, the second stops a
+        // remounted turn from being counted twice.
+        const seenNodes = new WeakSet();
+        let duplicates = 0;
         artifactCount = 0;
         // The first label seen while descending, so the topmost one in the
         // thread: what the page shows as the start of the session.
@@ -746,21 +771,40 @@
             for (let i = 0; i < nodes.length; i++) {
                 const msg = nodes[i].el;
                 const role = nodes[i].role || 'unknown';
-                // Prefer the real message id where the site provides one. The
-                // old positional fallback keyed on the first 50 characters of
-                // text, which collapsed genuinely distinct short messages
-                // ("ok", "continue") into one. Claude exposes no id, so it
-                // always takes the positional path.
-                const id = (idAttr && msg.getAttribute(idAttr)) || ('pos:' + role + ':' + domPath(msg));
-                if (seen.has(id)) continue;
-                seen.add(id);
+
+                // Cheapest and most exact check: this very node was already
+                // collected. Costs nothing on the passes where nothing is new,
+                // which is most of them.
+                if (seenNodes.has(msg)) continue;
+                seenNodes.add(msg);
+
+                const explicitId = idAttr ? msg.getAttribute(idAttr) : '';
+                if (explicitId && seen.has(explicitId)) { duplicates++; continue; }
+
                 const text = extractContent(msg);
                 if (!text) { emptySkipped++; continue; }
+
+                // Identity for a site with no message id, such as Claude.
+                //
+                // This used to be a DOM path, and it was wrong. A path is an
+                // index chain among siblings, and virtualization renumbers
+                // those constantly: the same turn remounts at a different index
+                // and reads as a brand new message. On a real 14-message Claude
+                // thread it produced 29, with one turn duplicated five times.
+                //
+                // The full text is used, never a prefix. A prefix was tried in
+                // v4.0 and merged genuinely distinct short turns. The residual
+                // risk is the inverse, two identical turns collapsing into one,
+                // so every merge is counted and the count goes in the export.
+                const key = explicitId || ('txt:' + role + ':' + text);
+                if (seen.has(key)) { duplicates++; continue; }
+                seen.add(key);
+
                 // Read once, on first sight. The neighbourhood is still mounted
                 // now; after the scroller moves on it may not be.
                 const time = findTimeFor(msg, msgSel);
                 if (time && !started) started = time;
-                messages.push({ id, role, text, time });
+                messages.push({ id: key, role, text, time });
                 added++;
             }
             return added;
@@ -835,6 +879,7 @@
                 count: messages.length,
                 emptySkipped,
                 artifacts: artifactCount,
+                duplicates,
                 started,
                 timestamped: messages.filter(m => m.time).length,
                 app: SITE.label,
@@ -845,19 +890,6 @@
                 capturedAt: new Date()
             }
         };
-    }
-
-    // Stable-ish positional key for messages with no data-message-id.
-    function domPath(el) {
-        const parts = [];
-        let node = el;
-        let depth = 0;
-        while (node && node.parentElement && depth < 12) {
-            parts.push(Array.prototype.indexOf.call(node.parentElement.children, node));
-            node = node.parentElement;
-            depth++;
-        }
-        return parts.join('.');
     }
 
     // -----------------------------------------------------------------------
@@ -889,6 +921,9 @@
             if (stats.started.exact) lines.push('started_exact: ' + JSON.stringify(stats.started.exact));
         }
         if (stats.timestamped) lines.push('timestamped_messages: ' + stats.timestamped);
+        // Only meaningful on a site with no message ids, where identity is the
+        // text itself. Reported so an over-merge is visible rather than silent.
+        if (stats.duplicates) lines.push('merged_duplicates: ' + stats.duplicates);
         lines.push('app: ' + JSON.stringify(stats.app));
         lines.push('generator: Chat Thread Exporter');
         lines.push('---');
@@ -1232,6 +1267,11 @@ html.js .wrap { padding-right: 44px; }
                 : '') +
             ' <span class="verbatim">as shown on the page, not resolved</span></p>\n';
 
+        const dupBlock = !stats.duplicates ? '' :
+            '<p class="meta">' + stats.duplicates + ' repeated copies of already-captured turns ' +
+            'were merged. ' + SITE.label + ' remounts turns while scrolling, and this thread has ' +
+            'no per-message ids, so identical text is treated as the same turn.</p>\n';
+
         const artifactBlock = !stats.artifacts ? '' :
             '<p class="warn-box"><strong>' + stats.artifacts + ' artifact(s) or embedded view(s) ' +
             'were not exported.</strong> Each is marked in place below. Text, links and code ' +
@@ -1267,6 +1307,7 @@ html.js .wrap { padding-right: 44px; }
             escapeHtml(stats.capturedAt.toLocaleString()) + '</time> · ' +
             stats.count + ' messages · capture: ' + flag + '</p>\n' +
             startedBlock +
+            dupBlock +
             sourceBlock +
             warning +
             artifactBlock +
@@ -1481,13 +1522,13 @@ html.js .wrap { padding-right: 44px; }
                 ? '\n' + s.artifacts + ' artifact(s) or embedded view(s) were not exported; ' +
                   'each is marked in the file.'
                 : '';
-            if (s.complete && !s.artifacts) {
+            // A complete capture closes, even when artifacts were skipped.
+            // v5.1 held the dialog open to report them, and because the overlay
+            // is hidden during the run, that reappearance read as the export
+            // popping up a second time after the download. The file says it
+            // loudly in its own header; the dialog does not need to.
+            if (s.complete) {
                 close();
-            } else if (s.complete) {
-                // Worth a beat of the user's attention rather than a silent
-                // close: the download is fine, but it is not the whole thread.
-                status.style.color = '#57606a';
-                status.textContent = 'Downloaded ' + s.count + ' messages.' + skipped;
             } else {
                 status.style.color = '#9a6700';
                 status.textContent = 'Downloaded ' + s.count + ' messages, but the capture may be incomplete:\n' +
@@ -1532,6 +1573,15 @@ html.js .wrap { padding-right: 44px; }
 
     function refresh() {
         scheduled = false;
+        if (onExcludedPath()) {
+            // Covers arriving here by in-app navigation, where @exclude never
+            // gets a second look because the document was never reloaded.
+            const existing = document.querySelector('.export-chat-btn');
+            if (existing) existing.remove();
+            const open = document.querySelector('.export-modal-overlay');
+            if (open) open.remove();
+            return;
+        }
         addExportButton();
     }
 
