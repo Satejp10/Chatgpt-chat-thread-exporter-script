@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.3
+// @version      5.4
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
@@ -247,6 +247,32 @@
     function artifactPlaceholder(kind, name) {
         artifactCount++;
         return '\n\n> [' + kind + ' not exported' + (name ? ': ' + name : '') + ']\n\n';
+    }
+
+    // Avatars, spacers and icons are images too, and a placeholder for every one
+    // of them would be noise on every single turn. Anything the page itself
+    // declares as small, or hides from screen readers, is treated as chrome.
+    const DECORATIVE_IMG_PX = 48;
+
+    function imageIsDecorative(node) {
+        if (node.getAttribute('aria-hidden') === 'true') return true;
+        if (node.getAttribute('role') === 'presentation') return true;
+        // Rendered size when the browser has laid it out, declared size when it
+        // has not. Never getComputedStyle, which forces a reflow per image.
+        const w = node.naturalWidth || Number(node.getAttribute('width')) || 0;
+        const h = node.naturalHeight || Number(node.getAttribute('height')) || 0;
+        return w > 0 && h > 0 && w <= DECORATIVE_IMG_PX && h <= DECORATIVE_IMG_PX;
+    }
+
+    function imageName(node) {
+        const label = String(node.getAttribute('alt') || node.getAttribute('title') || '').trim();
+        if (label) return label.length > 60 ? label.slice(0, 59) + '…' : label;
+        // Last resort, the file name. Blob and data URLs carry nothing readable,
+        // so they get no name rather than a wall of base64.
+        const src = node.getAttribute('src') || '';
+        if (!src || /^(?:data|blob):/i.test(src)) return '';
+        const file = src.split(/[?#]/)[0].split('/').pop() || '';
+        return file.length > 60 ? '' : file;
     }
 
     // -----------------------------------------------------------------------
@@ -555,6 +581,14 @@
         if (tag === 'IFRAME') {
             return artifactPlaceholder('embedded view', node.getAttribute('title') || '');
         }
+        // An image used to be dropped in silence by SKIP_TAGS. On a prompt that
+        // was nothing but a screenshot that emptied the whole turn, and an empty
+        // turn is discarded further up, so the message vanished and the export
+        // still called itself complete. A placeholder keeps the turn alive and
+        // gives it text to be identified by.
+        if (tag === 'IMG') {
+            return imageIsDecorative(node) ? '' : artifactPlaceholder('image', imageName(node));
+        }
 
         if (SKIP_TAGS.has(tag)) return '';
         if (node.getAttribute && node.getAttribute('role') === 'button') return '';
@@ -734,7 +768,8 @@
         box.style.cssText = 'position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);' +
             'background:rgba(30,30,30,0.95); color:#fff; padding:20px 30px; border-radius:8px;' +
             'z-index:2147483000; font-size:15px; font-family:sans-serif; text-align:center;' +
-            'min-width:280px; max-width:360px; box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+            'width:min(360px, calc(100vw - 32px)); box-sizing:border-box;' +
+            'box-shadow:0 4px 12px rgba(0,0,0,0.3);';
 
         const status = el('div', { style: 'white-space:pre-line;', text: 'Loading conversation...' });
 
@@ -884,12 +919,16 @@
         ctl.setTop(originalTop);
 
         const hitCeiling = steps >= MAX_DOWN_STEPS;
-        const complete = topConverged && reachedBottom && !hitCeiling;
+        // A dropped turn counts against completeness. It did not before v5.4:
+        // the reason string was built and then never shown, because reasons are
+        // only rendered when the capture is flagged incomplete. A thread missing
+        // one of its prompts was reporting itself as complete.
+        const complete = topConverged && reachedBottom && !hitCeiling && !emptySkipped;
         const reasons = [];
         if (!topConverged) reasons.push('the top of the thread was never reached');
         if (!reachedBottom) reasons.push('the bottom of the thread was never reached');
         if (hitCeiling) reasons.push('the scroll-step ceiling was hit');
-        if (emptySkipped) reasons.push(emptySkipped + ' turn(s) yielded no text');
+        if (emptySkipped) reasons.push(emptySkipped + ' turn(s) yielded no text and were dropped');
         // Listed last, and only when something actually went wrong: it is the
         // likely cause of the reasons above rather than a finding of its own.
         if (!complete && loader && loader.wasHidden && loader.wasHidden()) {
@@ -943,6 +982,9 @@
         // Only written when there were any, so its presence means something is
         // genuinely missing. A zero line would be noise on every other export.
         if (stats.artifacts) lines.push('artifacts_not_exported: ' + stats.artifacts);
+        // Turns that were present in the thread and produced no text. They are
+        // absent from the body below, so the number is the only trace of them.
+        if (stats.emptySkipped) lines.push('turns_dropped_empty: ' + stats.emptySkipped);
         // Copied from the page verbatim. `started` may be relative ("Yesterday
         // 8:30 PM"); resolve it against `exported` above if you need a date.
         // It is deliberately not resolved here.
@@ -965,8 +1007,13 @@
             lines.push('');
         }
         if (stats.artifacts) {
-            lines.push('> **' + stats.artifacts + ' artifact(s) or embedded view(s) were not exported.** ' +
-                'Each one is marked in place below.');
+            lines.push('> **' + stats.artifacts + ' artifact(s), image(s) or embedded view(s) were ' +
+                'not exported.** Each one is marked in place below.');
+            lines.push('');
+        }
+        if (stats.emptySkipped) {
+            lines.push('> **' + stats.emptySkipped + ' turn(s) were dropped.** They produced no ' +
+                'exportable text, so they are absent below and not counted above.');
             lines.push('');
         }
 
@@ -1307,9 +1354,17 @@ html.js .wrap { padding-right: 44px; }
             'no per-message ids, so identical text is treated as the same turn.</p>\n';
 
         const artifactBlock = !stats.artifacts ? '' :
-            '<p class="warn-box"><strong>' + stats.artifacts + ' artifact(s) or embedded view(s) ' +
-            'were not exported.</strong> Each is marked in place below. Text, links and code ' +
-            'blocks are unaffected.</p>';
+            '<p class="warn-box"><strong>' + stats.artifacts + ' artifact(s), image(s) or ' +
+            'embedded view(s) were not exported.</strong> Each is marked in place below. Text, ' +
+            'links and code blocks are unaffected.</p>';
+
+        // These left no placeholder, because there was nothing to place: the
+        // turn is simply not in the body. Said plainly so it is not mistaken for
+        // a rendering choice.
+        const emptyBlock = !stats.emptySkipped ? '' :
+            '<p class="warn-box"><strong>' + stats.emptySkipped + ' turn(s) were dropped.</strong> ' +
+            'They were found in the thread but produced no exportable text, so they do not appear ' +
+            'below and are not counted above.</p>';
 
         // Withheld means the line is not written at all, rather than written
         // blank: an empty "Source:" would still tell a reader one existed.
@@ -1345,6 +1400,7 @@ html.js .wrap { padding-right: 44px; }
             sourceBlock +
             warning +
             artifactBlock +
+            emptyBlock +
             '</header>\n<main>\n' +
             body.join('\n') +
             '\n</main>\n</div>\n' +
@@ -1438,8 +1494,12 @@ html.js .wrap { padding-right: 44px; }
         });
 
         const modal = el('div', {
+            // Sized against the viewport as well as capped, so a 360px phone
+            // gets a dialog with margins instead of one clipped at both edges.
             style: 'background:#fff; color:#24292f; padding:28px 30px; border-radius:12px;' +
-                'text-align:center; box-shadow:0 10px 25px rgba(0,0,0,0.2); max-width:420px;' +
+                'text-align:center; box-shadow:0 10px 25px rgba(0,0,0,0.2);' +
+                'width:min(420px, calc(100vw - 32px)); box-sizing:border-box;' +
+                'max-height:calc(100vh - 32px); overflow-y:auto;' +
                 'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
         });
 
@@ -1553,8 +1613,8 @@ html.js .wrap { padding-right: 44px; }
             }
             const s = result.stats;
             const skipped = s.artifacts
-                ? '\n' + s.artifacts + ' artifact(s) or embedded view(s) were not exported; ' +
-                  'each is marked in the file.'
+                ? '\n' + s.artifacts + ' artifact(s), image(s) or embedded view(s) were not ' +
+                  'exported; each is marked in the file.'
                 : '';
             // A complete capture closes, even when artifacts were skipped.
             // v5.1 held the dialog open to report them, and because the overlay
@@ -1597,14 +1657,68 @@ html.js .wrap { padding-right: 44px; }
         const btn = el('button', {
             'class': 'export-chat-btn',
             type: 'button',
-            text: 'Export Chat',
-            style: 'position:fixed; bottom:20px; right:20px; z-index:2147482000; padding:10px 15px;' +
-                'background:#10a37f; color:#fff; border:none; border-radius:8px; cursor:pointer;' +
-                'box-shadow:0 4px 6px rgba(0,0,0,0.1); font-size:14px; font-weight:bold;' +
-                'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;'
+            text: 'Export Chat'
         });
+        placeButton(btn);
         btn.addEventListener('click', showExportModal);
         document.body.appendChild(btn);
+    }
+
+    // -----------------------------------------------------------------------
+    // Button placement
+    //
+    // Bottom right is free on a desktop and occupied on a phone: both sites put
+    // the composer, its attach button and its mic across the bottom of a narrow
+    // viewport, and the export button landed on top of them.
+    //
+    // The placement is computed in JS rather than written as a media query
+    // because the style is an inline attribute. Injecting a <style> element
+    // would work only where the page's CSP allows inline stylesheets, and these
+    // two sites are exactly the kind that may not.
+    //
+    // The narrow layout docks the button to the middle of the right edge. That
+    // strip is the one part of a phone screen neither site puts a control on:
+    // the header owns the top, the composer owns the bottom, and the middle is
+    // scrolling transcript that nothing is anchored to.
+    // -----------------------------------------------------------------------
+
+    const NARROW_PX = 820;
+
+    function isNarrow() {
+        // innerWidth, not a pointer query. What matters is whether the site
+        // switched to its mobile layout, and that follows the viewport width.
+        // A narrow desktop window gets the same treatment for the same reason.
+        return Math.min(window.innerWidth || 0, window.innerHeight || 0) > 0 &&
+            (window.innerWidth || 0) <= NARROW_PX;
+    }
+
+    const BTN_COMMON = 'position:fixed; z-index:2147482000; background:#10a37f; color:#fff;' +
+        'border:none; cursor:pointer; font-weight:bold; touch-action:manipulation;' +
+        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+
+    function placeButton(btn) {
+        if (isNarrow()) {
+            // Rounded on the left only, so it reads as docked to the edge and
+            // not as something floating over the message it sits beside. The
+            // safe-area inset keeps it clear of a rounded screen corner.
+            btn.setAttribute('style', BTN_COMMON +
+                'top:50%; transform:translateY(-50%);' +
+                'right:calc(env(safe-area-inset-right, 0px)); ' +
+                'padding:10px 12px; font-size:13px; line-height:1;' +
+                'border-radius:8px 0 0 8px; box-shadow:0 2px 8px rgba(0,0,0,0.25);' +
+                'opacity:0.92;');
+            btn.textContent = 'Export';
+            return;
+        }
+        btn.setAttribute('style', BTN_COMMON +
+            'bottom:20px; right:20px; padding:10px 15px; font-size:14px; border-radius:8px;' +
+            'box-shadow:0 4px 6px rgba(0,0,0,0.1);');
+        btn.textContent = 'Export Chat';
+    }
+
+    function reposition() {
+        const btn = document.querySelector('.export-chat-btn');
+        if (btn) placeButton(btn);
     }
 
     let scheduled = false;
@@ -1636,5 +1750,9 @@ html.js .wrap { padding-right: 44px; }
     if (!SITE) return;
 
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    // Rotating a phone changes which layout applies, and so does the on-screen
+    // keyboard resizing the visual viewport.
+    window.addEventListener('resize', reposition);
+    window.addEventListener('orientationchange', reposition);
     refresh();
 })();
