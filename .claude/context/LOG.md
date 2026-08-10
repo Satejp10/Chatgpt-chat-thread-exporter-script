@@ -184,3 +184,10 @@ Entry format:
 - open: whether chatgpt.com renders a session timestamp the patterns can see
 - open: test/ still predates v5.0
 - next: user confirms whether a stale v4.2 entry is installed, and re-exports to see the role split
+
+## 2026-08-10 | session 10 | web
+- resolved: the button on `chatgpt.com/codex/cloud` was a stale v4.2 entry installed alongside v5.x, exactly as hypothesised in session 9. User deleted it and reinstalled; the coding surfaces are now clean. No code was at fault — v5.2's exclusion worked from the start.
+- confirms the session-9 correction: renaming `@name` in v5.0 forked the install, and the README note was never going to reach someone who had already installed. The cost landed as a bug report against correct code, and cost a round trip to diagnose.
+- decided: do not rename `@name` again. If a future version needs a different identity, the release notes and the repo README both have to carry a delete-the-old-entry step at the top, not buried in an install section.
+- note: v5.3's exclusion hardening (guard on `addExportButton()`, wider `@exclude` globs) stands anyway. It was defence in depth against a cause that turned out to be elsewhere, and it costs nothing.
+- next: unfixed list, in order — silent empty-turn drops (real data loss, since v4.0), Claude artifact selectors, artifacts leaving no trace when the connector is mid-render, ChatGPT timestamps, stale test/
