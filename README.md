@@ -99,7 +99,8 @@ The HTML header carries the same split inline: `18 messages (9 user, 9 assistant
 declared count.
 
 Both preserve link URLs, fenced code blocks with their language, lists, tables
-and blockquotes. Images and attachments are not exported, by design.
+and blockquotes. Image and attachment *contents* are not exported, by design;
+each one leaves a marker in place (see below).
 
 ## Timestamps
 
@@ -124,22 +125,40 @@ A turn with no rendered label gets no timestamp at all, and never inherits one
 from the turn above it. "The page showed nothing here" and "the page showed the
 same thing here" are different claims, and only one of them is true.
 
-## Artifacts and embedded views
+## Artifacts, images and embedded views
 
-Claude artifacts and inline visualisations are **not exported** in v5.0. They are
+Claude artifacts, inline visualisations and images are **not exported**. They are
 not dropped in silence either. Each one leaves a marker where it stood:
 
 ```
 > [artifact not exported: Sales dashboard]
+> [image not exported: screenshot-2026-08-10.png]
 ```
 
 and the count lands in the header (`artifacts_not_exported: 3` in the Markdown
 frontmatter, a banner in the HTML). An export with no marker and no count really
-did contain no artifacts. Text, links and code blocks around them are unaffected.
+did contain none. Text, links and code blocks around them are unaffected.
+
+Images are named from `alt`, then `title`, then the file name in the `src`. Blob
+and data URLs give no name, so the marker carries none rather than a wall of
+base64. Anything the page declares as 48px or smaller, or hides from screen
+readers, is treated as an avatar or icon and left out.
 
 This is separate from the capture flag on purpose. A truncated capture means the
 exporter does not know what it missed. A marked artifact means it knows exactly
 what it missed and where.
+
+## Dropped turns
+
+A turn that yields no text at all is not exported, because there is nothing to
+export. Before v5.4 that was silent, and it lost real messages: a prompt that was
+nothing but a screenshot had all of its content skipped, so the turn came out
+empty, got discarded, and the file still said `capture: complete`.
+
+Two things changed. Images now leave a marker, so an image-only turn has text and
+survives. Anything still empty is counted as `turns_dropped_empty` in the header,
+and the capture is flagged `possibly-truncated` — a file that dropped a turn can
+no longer call itself complete.
 
 ## Duplicate turns
 
@@ -163,7 +182,7 @@ line in the HTML header). If that number looks wrong, it is visible.
 | | Turn detection | Per-message ids | Artifacts |
 |---|---|---|---|
 | ChatGPT | `data-message-author-role` | yes | n/a |
-| Claude | class and `data-testid` candidates, first match wins | no, position-keyed | marked, not exported |
+| Claude | class and `data-testid` candidates, first match wins | no, text-keyed | marked, not exported |
 
 ChatGPT tags every turn with an attribute, so one selector covers it. Claude has
 no such attribute and its class names have changed more than once, so the script
@@ -178,6 +197,22 @@ one-line addition to the `layouts` list at the top of the script.
 
 Export preferences are stored per origin, so ticking a box on `chatgpt.com` does
 not change what happens on `claude.ai`.
+
+## Mobile browsers
+
+Works in any mobile browser that runs a userscript manager, with one difference:
+the button docks to the middle of the right edge instead of the bottom right.
+Both sites fill the bottom of a narrow viewport with the composer, its attach
+button and its mic, and the export button used to sit on top of them.
+
+The switch happens at 820px of viewport width and follows rotation and the
+on-screen keyboard, so a narrow desktop window gets the mobile placement too. The
+dialog and the progress box are sized against the viewport as well, so neither is
+clipped on a small screen.
+
+Scrolling a long thread on a phone is slower and more likely to stall than on a
+desktop. The advice at the top of the dialog matters more here: scroll the thread
+top to bottom yourself first.
 
 ## Tests
 
