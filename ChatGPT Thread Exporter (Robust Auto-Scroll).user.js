@@ -1,11 +1,12 @@
 // ==UserScript==
-// @name         ChatGPT Thread Exporter (Robust Auto-Scroll)
+// @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      4.2
-// @description  Exports full ChatGPT threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
+// @version      5.0
+// @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
+// @match        https://claude.ai/*
 // @grant        none
 // ==/UserScript==
 
@@ -19,12 +20,13 @@
 //   * No build step, no dependencies, single file.
 //   * Never assign to innerHTML: the page may enforce Trusted Types, and the
 //     export must be safe to open from disk.
+//   * Nothing is ever dropped quietly. If a turn, or part of one, does not
+//     make it into the file, the file says so.
 // ---------------------------------------------------------------------------
 
 (function () {
     'use strict';
 
-    const MSG_SELECTOR = '[data-message-author-role]';
     const STALL_PASSES = 3;      // consecutive zero-yield passes before we call it done
     const MAX_DOWN_STEPS = 4000; // hard ceiling; hitting it means "possibly truncated"
     const MAX_TOP_SEEKS = 400;   // hard ceiling on the lazy-prepend seek loop
@@ -32,6 +34,197 @@
     const TOP_SETTLE_MS = 450;
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    // -----------------------------------------------------------------------
+    // Site adapters
+    //
+    // Everything after this block is site-agnostic. The scroller, the walker,
+    // both renderers, the rail and the modal never learn which site they ran
+    // on. A site contributes four things and nothing else: how to find message
+    // elements, how to tell whose turn it is, what the conversation is called,
+    // and what to name the file.
+    //
+    // ChatGPT tags every turn with data-message-author-role, so one selector
+    // covers it and the role is read straight off the attribute. Claude has no
+    // such attribute: user and assistant turns are different elements, and the
+    // class names have changed more than once. So Claude ships a list of
+    // candidate layouts and the first one that actually matches the live page
+    // wins. The chosen layout id travels into the export and into the failure
+    // message, so a wrong guess shows up as a named layout rather than as a
+    // mysteriously empty capture.
+    // -----------------------------------------------------------------------
+
+    const SITES = [
+        {
+            id: 'chatgpt',
+            label: 'ChatGPT',
+            slug: 'chatgpt-export',
+            genericTitle: 'ChatGPT export',
+            matches: h => /(^|\.)chatgpt\.com$/.test(h) || /(^|\.)chat\.openai\.com$/.test(h),
+            titleTail: /\s*[|\-–—]\s*ChatGPT\s*$/i,
+            titleIsEmpty: /^chatgpt$/i,
+            layouts: [{
+                id: 'author-role',
+                user: '[data-message-author-role="user"]',
+                assistant: '[data-message-author-role]:not([data-message-author-role="user"])',
+                roleAttr: 'data-message-author-role',
+                idAttr: 'data-message-id'
+            }],
+            // ChatGPT's canvas is not captured either, but it does not render
+            // as a distinguishable cell inside the turn, so there is nothing
+            // reliable to place a marker on. Left empty rather than guessed.
+            artifacts: []
+        },
+        {
+            id: 'claude',
+            label: 'Claude',
+            slug: 'claude-export',
+            genericTitle: 'Claude export',
+            matches: h => /(^|\.)claude\.ai$/.test(h),
+            titleTail: /\s*[|\-–—\\\/]\s*Claude\s*$/i,
+            titleIsEmpty: /^claude$/i,
+            layouts: [
+                { id: 'testid', user: '[data-testid="user-message"]', assistant: '.font-claude-response' },
+                { id: 'msg-class', user: '[data-testid="user-message"]', assistant: '.font-claude-message' },
+                { id: 'legacy', user: '.font-user-message', assistant: '.font-claude-message' }
+            ],
+            artifacts: [
+                '[data-testid="artifact-block-cell"]',
+                '.artifact-block-cell',
+                '[aria-label^="Preview contents"]'
+            ]
+        }
+    ];
+
+    function pickSite() {
+        const host = location.hostname;
+        for (const s of SITES) {
+            if (s.matches(host)) return s;
+        }
+        return null;
+    }
+
+    const SITE = pickSite();
+
+    // Stands in for the conversation title whenever the real one is withheld,
+    // and doubles as the fallback for a chat that has no title yet.
+    const GENERIC_TITLE = SITE ? SITE.genericTitle : 'Chat export';
+
+    function safeCount(selector) {
+        try {
+            return document.querySelectorAll(selector).length;
+        } catch (e) {
+            // A selector this browser will not parse is simply not a candidate.
+            return 0;
+        }
+    }
+
+    function safeMatches(node, selector) {
+        try {
+            return !!(node.matches && node.matches(selector));
+        } catch (e) {
+            return false;
+        }
+    }
+
+    let cachedLayout = null;
+
+    // Resolved lazily and re-resolved until a layout matches both roles: at
+    // script start the thread is usually not mounted yet, and the answer would
+    // be wrong if cached then. A layout matching only one role is used but not
+    // cached, because a new chat, or a capture begun before the reply lands,
+    // legitimately has one role on screen and a better match may still appear.
+    function layout() {
+        if (cachedLayout) return cachedLayout;
+        let partial = null;
+        for (const l of SITE.layouts) {
+            const users = safeCount(l.user);
+            const assistants = safeCount(l.assistant);
+            if (users > 0 && assistants > 0) {
+                cachedLayout = l;
+                return l;
+            }
+            if (!partial && users + assistants > 0) partial = l;
+        }
+        return partial || SITE.layouts[0];
+    }
+
+    function messageSelector(l) {
+        return l.user + ', ' + l.assistant;
+    }
+
+    // Cheap count for the scroll loops, which only need to know whether the
+    // number is still growing. The nesting filter below is not worth paying
+    // for hundreds of times per capture.
+    function mountedCount() {
+        return safeCount(messageSelector(layout()));
+    }
+
+    function firstMessageEl() {
+        try {
+            return document.querySelector(messageSelector(layout()));
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function roleOf(node, l) {
+        if (l.roleAttr) {
+            const v = node.getAttribute(l.roleAttr);
+            if (v) return v;
+        }
+        return safeMatches(node, l.user) ? 'user' : 'assistant';
+    }
+
+    // Returns { el, role } for every turn on the page, in document order.
+    function listMessages() {
+        const l = layout();
+        let nodes;
+        try {
+            nodes = Array.prototype.slice.call(document.querySelectorAll(messageSelector(l)));
+        } catch (e) {
+            return [];
+        }
+        // Drop any match sitting inside another match. On Claude an assistant
+        // container and the prose block within it can both hit, which would
+        // otherwise export the same turn twice. Checked by walking each node's
+        // ancestors rather than comparing every pair, so this stays linear.
+        const set = new Set(nodes);
+        const out = [];
+        for (const n of nodes) {
+            let p = n.parentElement;
+            let nested = false;
+            while (p) {
+                if (set.has(p)) { nested = true; break; }
+                p = p.parentElement;
+            }
+            if (!nested) out.push({ el: n, role: roleOf(n, l) });
+        }
+        return out;
+    }
+
+    // -----------------------------------------------------------------------
+    // Artifacts and embedded views
+    //
+    // v5.0 does not export artifact contents. What it will not do is drop them
+    // in silence: each one leaves a marked placeholder where it stood and is
+    // counted into the export header, so a reader can see precisely what is
+    // missing and how much of it. Same rule as the capture flag.
+    // -----------------------------------------------------------------------
+
+    const ARTIFACT_SELECTOR = SITE && SITE.artifacts.length ? SITE.artifacts.join(', ') : '';
+
+    let artifactCount = 0;
+
+    function artifactName(node) {
+        const flat = String(node.textContent || '').replace(/\s+/g, ' ').trim();
+        return flat.length > 60 ? flat.slice(0, 59) + '…' : flat;
+    }
+
+    function artifactPlaceholder(kind, name) {
+        artifactCount++;
+        return '\n\n> [' + kind + ' not exported' + (name ? ': ' + name : '') + ']\n\n';
+    }
 
     // -----------------------------------------------------------------------
     // Escaping and sanitising
@@ -78,13 +271,9 @@
         return s;
     }
 
-    // Stands in for the conversation title whenever the real one is withheld,
-    // and doubles as the fallback for a chat that has no title yet.
-    const GENERIC_TITLE = 'ChatGPT export';
-
     function conversationTitle() {
-        const raw = (document.title || '').replace(/\s*[|\-–—]\s*ChatGPT\s*$/i, '').trim();
-        if (!raw || /^chatgpt$/i.test(raw)) return GENERIC_TITLE;
+        const raw = (document.title || '').replace(SITE.titleTail, '').trim();
+        if (!raw || SITE.titleIsEmpty.test(raw)) return GENERIC_TITLE;
         return raw;
     }
 
@@ -104,8 +293,8 @@
     // Two booleans deciding whether the conversation's URL and title are
     // written into the export. No conversation content is ever stored here.
     //
-    // This lives in chatgpt.com's own localStorage, which the page's scripts
-    // can also write to, so the value is treated as untrusted input: only
+    // This lives in the site's own localStorage, which the page's scripts can
+    // also write to, so the value is treated as untrusted input: only
     // fields that are already booleans are accepted, and only booleans are
     // written back. A tampered or corrupt entry can therefore never reach a
     // renderer as anything other than true or false.
@@ -207,6 +396,17 @@
         if (node.nodeType !== 1) return '';                          // comments etc.
 
         const tag = node.tagName;
+
+        // Both checks run before SKIP_TAGS and before the role=button rule,
+        // which would otherwise swallow these without trace: an artifact cell
+        // is usually a button, and an embedded view is an iframe.
+        if (ARTIFACT_SELECTOR && safeMatches(node, ARTIFACT_SELECTOR)) {
+            return artifactPlaceholder('artifact', artifactName(node));
+        }
+        if (tag === 'IFRAME') {
+            return artifactPlaceholder('embedded view', node.getAttribute('title') || '');
+        }
+
         if (SKIP_TAGS.has(tag)) return '';
         if (node.getAttribute && node.getAttribute('role') === 'button') return '';
 
@@ -350,7 +550,7 @@
     // page. The old full-document scan called getComputedStyle thousands of
     // times and could pick the conversation sidebar over the thread.
     function findScroller() {
-        const anchor = document.querySelector(MSG_SELECTOR);
+        const anchor = firstMessageEl();
         let el = anchor ? anchor.parentElement : null;
         while (el && el !== document.body && el !== document.documentElement) {
             const s = window.getComputedStyle(el);
@@ -418,6 +618,7 @@
     async function captureMessages(loader) {
         const messages = [];
         const seen = new Set();
+        artifactCount = 0;
         const ctl = makeScrollCtl(findScroller());
         const startedAt = Date.now();
         const originalTop = ctl.top();
@@ -428,14 +629,19 @@
 
         const collect = () => {
             let added = 0;
-            const nodes = document.querySelectorAll(MSG_SELECTOR);
+            // Re-read per pass: on Claude the layout is only pinned once both
+            // roles are on screen, which may not be true at the first pass.
+            const idAttr = layout().idAttr;
+            const nodes = listMessages();
             for (let i = 0; i < nodes.length; i++) {
-                const msg = nodes[i];
-                const role = msg.getAttribute('data-message-author-role') || 'unknown';
-                // Prefer the real message id. The old positional fallback keyed
-                // on the first 50 characters of text, which collapsed genuinely
-                // distinct short messages ("ok", "continue") into one.
-                const id = msg.getAttribute('data-message-id') || ('pos:' + role + ':' + domPath(msg));
+                const msg = nodes[i].el;
+                const role = nodes[i].role || 'unknown';
+                // Prefer the real message id where the site provides one. The
+                // old positional fallback keyed on the first 50 characters of
+                // text, which collapsed genuinely distinct short messages
+                // ("ok", "continue") into one. Claude exposes no id, so it
+                // always takes the positional path.
+                const id = (idAttr && msg.getAttribute(idAttr)) || ('pos:' + role + ':' + domPath(msg));
                 if (seen.has(id)) continue;
                 seen.add(id);
                 const text = extractContent(msg);
@@ -458,7 +664,7 @@
             ctl.setTop(0);
             await sleep(TOP_SETTLE_MS);
             const h = ctl.height();
-            const n = document.querySelectorAll(MSG_SELECTOR).length;
+            const n = mountedCount();
             if (h === lastHeight && n === lastCount) topStable++; else topStable = 0;
             lastHeight = h;
             lastCount = n;
@@ -514,6 +720,9 @@
             stats: {
                 count: messages.length,
                 emptySkipped,
+                artifacts: artifactCount,
+                app: SITE.label,
+                layout: layout().id,
                 complete,
                 reasons,
                 durationMs: Date.now() - startedAt,
@@ -553,13 +762,22 @@
         if (!stats.complete && stats.reasons.length) {
             lines.push('capture_notes: ' + JSON.stringify(stats.reasons.join('; ')));
         }
-        lines.push('generator: ChatGPT Thread Exporter');
+        // Only written when there were any, so its presence means something is
+        // genuinely missing. A zero line would be noise on every other export.
+        if (stats.artifacts) lines.push('artifacts_not_exported: ' + stats.artifacts);
+        lines.push('app: ' + JSON.stringify(stats.app));
+        lines.push('generator: Chat Thread Exporter');
         lines.push('---');
         lines.push('');
         lines.push('# ' + (meta.title || GENERIC_TITLE).replace(/\n/g, ' '));
         lines.push('');
         if (!stats.complete) {
             lines.push('> **Capture may be incomplete.** ' + stats.reasons.join('; ') + '.');
+            lines.push('');
+        }
+        if (stats.artifacts) {
+            lines.push('> **' + stats.artifacts + ' artifact(s) or embedded view(s) were not exported.** ' +
+                'Each one is marked in place below.');
             lines.push('');
         }
 
@@ -867,6 +1085,14 @@ html.js .wrap { padding-right: 44px; }
             '<p class="warn-box"><strong>Capture may be incomplete.</strong> ' +
             escapeHtml(stats.reasons.join('; ')) + '. Re-run the export from the top of the thread.</p>';
 
+        // Separate from the capture flag on purpose. A truncated capture means
+        // the exporter does not know what it missed; this one means it knows
+        // exactly what it missed and left a marker at each spot.
+        const artifactBlock = !stats.artifacts ? '' :
+            '<p class="warn-box"><strong>' + stats.artifacts + ' artifact(s) or embedded view(s) ' +
+            'were not exported.</strong> Each is marked in place below. Text, links and code ' +
+            'blocks are unaffected.</p>';
+
         // Withheld means the line is not written at all, rather than written
         // blank: an empty "Source:" would still tell a reader one existed.
         const sourceBlock = !meta.url ? '' :
@@ -898,6 +1124,7 @@ html.js .wrap { padding-right: 44px; }
             stats.count + ' messages · capture: ' + flag + '</p>\n' +
             sourceBlock +
             warning +
+            artifactBlock +
             '</header>\n<main>\n' +
             body.join('\n') +
             '\n</main>\n</div>\n' +
@@ -920,15 +1147,23 @@ html.js .wrap { padding-right: 44px; }
         const { messages, stats } = await captureMessages(loader);
 
         if (!messages.length) {
-            return { stats, downloaded: false, reason: 'No messages were found on this page.' };
+            // Name what was tried. On Claude a class-name change on the site is
+            // the likeliest cause, and this line is what makes that fixable.
+            return {
+                stats,
+                downloaded: false,
+                reason: 'No messages were found on this page. Tried the "' + layout().id +
+                    '" layout for ' + SITE.label + '. If the thread is clearly there, ' +
+                    'the site has changed its markup and the selectors need updating.'
+            };
         }
 
         // Without the title there is nothing left to tell two exports apart, so
         // the time is added. Date alone would collide on the second export of
         // the day and leave the browser to append " (1)".
         const base = meta.title
-            ? sanitizeFilename(meta.title, 'chatgpt-export') + '-' + isoDate(stats.capturedAt)
-            : 'chatgpt-export-' + isoDate(stats.capturedAt) + '-' + clockSuffix(stats.capturedAt);
+            ? sanitizeFilename(meta.title, SITE.slug) + '-' + isoDate(stats.capturedAt)
+            : SITE.slug + '-' + isoDate(stats.capturedAt) + '-' + clockSuffix(stats.capturedAt);
 
         if (format === 'markdown') {
             downloadFile(renderMarkdown(messages, stats, meta), base + '.md', 'text/markdown;charset=utf-8');
@@ -1018,7 +1253,9 @@ html.js .wrap { padding-right: 44px; }
         modal.appendChild(el('h3', { style: 'margin:0 0 8px; font-size:18px;', text: 'Export Chat Thread' }));
         modal.appendChild(el('p', {
             style: 'color:#57606a; margin:0 0 18px; font-size:13px;',
-            text: 'Auto-scrolls the whole thread first, then reports whether the capture was complete.'
+            text: 'Auto-scrolls the whole ' + SITE.label + ' thread first, then reports whether ' +
+                'the capture was complete. Artifacts and embedded views are not exported; ' +
+                'any found are marked in the file and counted in its header.'
         }));
         modal.appendChild(prefBox);
         modal.appendChild(mdBtn);
@@ -1071,12 +1308,21 @@ html.js .wrap { padding-right: 44px; }
                 return;
             }
             const s = result.stats;
-            if (s.complete) {
+            const skipped = s.artifacts
+                ? '\n' + s.artifacts + ' artifact(s) or embedded view(s) were not exported; ' +
+                  'each is marked in the file.'
+                : '';
+            if (s.complete && !s.artifacts) {
                 close();
+            } else if (s.complete) {
+                // Worth a beat of the user's attention rather than a silent
+                // close: the download is fine, but it is not the whole thread.
+                status.style.color = '#57606a';
+                status.textContent = 'Downloaded ' + s.count + ' messages.' + skipped;
             } else {
                 status.style.color = '#9a6700';
                 status.textContent = 'Downloaded ' + s.count + ' messages, but the capture may be incomplete:\n' +
-                    s.reasons.join('; ') + '.\nThe file is flagged accordingly.';
+                    s.reasons.join('; ') + '.\nThe file is flagged accordingly.' + skipped;
             }
         };
 
@@ -1126,6 +1372,11 @@ html.js .wrap { padding-right: 44px; }
         if (window.requestIdleCallback) window.requestIdleCallback(refresh, { timeout: 600 });
         else setTimeout(refresh, 250);
     }
+
+    // A host we have no adapter for gets nothing at all: no button, no
+    // observer, no listeners. The @match lines should already prevent this,
+    // but the script must not half-run if one is ever widened by accident.
+    if (!SITE) return;
 
     new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
     refresh();

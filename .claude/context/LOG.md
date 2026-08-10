@@ -107,3 +107,24 @@ Entry format:
 - did: generated status report SR-chatgpt-chat-thread-exporter-script-002, superseding 001. Report 001 was delivered to chat. 002 carries a dedicated §2.8 "Why there are no timestamps" so the reason survives a cold pickup.
 - note: the test suite was not re-run this session, at the user's standing instruction that they run tests themselves. Static checks only: node --check, size, metadata block, forbidden-API greps, all clean. Assertion counts in the report are carried forward from session 4 and tagged as such.
 - next: nothing in flight. Work resumes when the element markup lands.
+
+## 2026-08-10 | session 6 | web
+- did: v5.0 — added claude.ai support behind a site-adapter layer, and artifact/embedded-view markers
+- note: renumbered from session 5 to 6 on merge. Session 5 ran in parallel on main (report 002, the timestamp write-up) and claimed the slot first; this session branched from a944265 and never saw it.
+- decided: a site contributes exactly four things (find message elements, tell whose turn it is, name the conversation, name the file). Scroller, walker, both renderers, rail and modal were already site-agnostic and were not touched, so the port is additive rather than a rewrite.
+- found: ChatGPT's coupling was thinner than expected — `MSG_SELECTOR`, `data-message-author-role`, `data-message-id`, the title suffix and the filename prefix. Nothing else in 1132 lines knew what site it was on.
+- decided: Claude gets a *list* of candidate layouts (`testid`, `msg-class`, `legacy`) resolved against the live page, because it has no role attribute and its class names have changed more than once. First layout matching both roles wins and is cached; a layout matching one role is used but not cached, since a new chat legitimately shows one role.
+- decided: when nothing matches, the export refuses and names the layout it tried, because a silently empty file is the failure mode this project exists to avoid. That message is the bug report.
+- decided: dedup nested matches by walking each node's ancestors against a Set, not pairwise `contains`. On Claude an assistant container and its inner prose block can both match; pairwise is O(n²) and `collect()` runs once per scroll step, so at 300 messages that was ~10M DOM calls per capture.
+- decided: artifacts and inline visualizations are NOT exported in v5.0, but each leaves `> [artifact not exported: <name>]` in place and increments `artifacts_not_exported` in the header. Same doctrine as the capture flag: the file states what is missing.
+- decided: the artifact and iframe checks run before SKIP_TAGS and before the `role=button` rule, because an artifact cell is usually a button and an embedded view is an iframe — both were already being swallowed without trace.
+- decided: artifact count is reported separately from the capture flag, because they mean different things. Truncated = the exporter does not know what it missed. Marked artifact = it knows exactly what it missed and where.
+- decided: `@name` changed to "Chat Thread Exporter", accepting that script managers treat it as a new script rather than an update. Same forking hazard the `@namespace` invariant warns about. Taken deliberately because the old name is now wrong on half the supported sites; mitigated with an explicit "remove the old entry first" note in the README install section.
+- broke invariant, deliberately and at the user's request: `@match` gained `https://claude.ai/*`. The invariant says widening scope is a security regression and must be escalated, not just done. Escalated in chat, user asked for it in as many words. No other `@match` line touched.
+- rejected: exporting artifact source into the file, because it is a v5.1 decision that needs the CSP question answered first (the export is `default-src 'none'`; embedding runnable code contradicts that, shipping source as a code block does not)
+- rejected: clicking each artifact card open to read the side panel, because it is a second scroll-and-settle problem layered on the one already solved, and it belongs with the rest of artifact capture
+- note: no network calls, no `innerHTML`, no eval, no auto-update, no credentials. Re-grepped after the change; all clean. `node --check` passes.
+- open: every Claude selector is a guess. No live DOM sample was available, so the candidate-layout mechanism is the hedge — it fails loudly and is a one-line fix when it is wrong.
+- open: test/ predates v5.0 and asserts the old filename prefix and generator string, so parts of it fail against the current script. No Claude fixture exists.
+- open: timestamps still blocked on a live DOM sample in docs/ref/
+- next: user installs v5.0, removes the v4.2 entry, and reports which Claude layout resolves (or the refusal message if none does)

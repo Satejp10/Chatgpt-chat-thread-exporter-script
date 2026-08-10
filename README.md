@@ -1,16 +1,22 @@
-# ChatGPT chat thread exporter
+# Chat thread exporter
 
-A single-file userscript that exports a ChatGPT conversation to a local Markdown
-or HTML file. It is an archival tool: nothing leaves the browser.
+A single-file userscript that exports a **ChatGPT** or **Claude** conversation to
+a local Markdown or HTML file. It is an archival tool: nothing leaves the
+browser.
 
 ## Install
 
 Tampermonkey or Violentmonkey, then add
 `ChatGPT Thread Exporter (Robust Auto-Scroll).user.js`. There is no build step
-and no dependencies. Auto-update is deliberately absent — the file you reviewed
+and no dependencies. Auto-update is deliberately absent: the file you reviewed
 is the file that runs, and it cannot change under you.
 
-An **Export Chat** button appears bottom-right on `chatgpt.com`.
+**Upgrading from v4.x:** remove the old *ChatGPT Thread Exporter* entry first.
+v5.0 is named *Chat Thread Exporter*, so your script manager treats it as a new
+script rather than an update, and leaving both installed puts two Export buttons
+on every ChatGPT page.
+
+An **Export Chat** button appears bottom-right on `chatgpt.com` and `claude.ai`.
 
 ## What it guarantees
 
@@ -29,9 +35,9 @@ An **Export Chat** button appears bottom-right on `chatgpt.com`.
 
 ## Capture completeness
 
-ChatGPT virtualises long threads: turns that are off screen do not exist in the
-DOM, and older history is fetched lazily as you scroll up. The exporter scrolls
-the thread to force everything to load, then walks it top to bottom.
+Both sites virtualise long threads: turns that are off screen do not exist in
+the DOM, and older history is fetched lazily as you scroll up. The exporter
+scrolls the thread to force everything to load, then walks it top to bottom.
 
 Every export states whether that worked. The HTML header and the Markdown
 frontmatter carry `capture: complete` or `capture: possibly-truncated` with the
@@ -75,7 +81,49 @@ declared count.
 Both preserve link URLs, fenced code blocks with their language, lists, tables
 and blockquotes. Images and attachments are not exported, by design.
 
+## Artifacts and embedded views
+
+Claude artifacts and inline visualisations are **not exported** in v5.0. They are
+not dropped in silence either. Each one leaves a marker where it stood:
+
+```
+> [artifact not exported: Sales dashboard]
+```
+
+and the count lands in the header (`artifacts_not_exported: 3` in the Markdown
+frontmatter, a banner in the HTML). An export with no marker and no count really
+did contain no artifacts. Text, links and code blocks around them are unaffected.
+
+This is separate from the capture flag on purpose. A truncated capture means the
+exporter does not know what it missed. A marked artifact means it knows exactly
+what it missed and where.
+
+## Site support
+
+| | Turn detection | Per-message ids | Artifacts |
+|---|---|---|---|
+| ChatGPT | `data-message-author-role` | yes | n/a |
+| Claude | class and `data-testid` candidates, first match wins | no, position-keyed | marked, not exported |
+
+ChatGPT tags every turn with an attribute, so one selector covers it. Claude has
+no such attribute and its class names have changed more than once, so the script
+carries a list of candidate layouts and picks the first that matches the live
+page. If none match, the export refuses and names the layout it tried, rather
+than producing an empty file:
+
+> No messages were found on this page. Tried the "testid" layout for Claude.
+
+That message is the thing to report if Claude changes its markup. Fixing it is a
+one-line addition to the `layouts` list at the top of the script.
+
+Export preferences are stored per origin, so ticking a box on `chatgpt.com` does
+not change what happens on `claude.ai`.
+
 ## Tests
 
 See [`test/README.md`](test/README.md). The userscript stays dependency-free;
 the tests are separate tooling.
+
+The suite predates v5.0 and still asserts the old `chatgpt-export` filename and
+`generator: ChatGPT Thread Exporter` line, so parts of it fail against the
+current script. There is also no Claude fixture yet. Both are outstanding.
