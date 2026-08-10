@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.5
+// @version      5.6
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
@@ -307,12 +307,19 @@
     // 7:58 AM" and the bare halves ever worked, which is why no export has
     // carried a timestamp yet.
     const AT = '(?:\\s*(?:at|,)?\\s*)?';
+    // An optional weekday in front of a date. chatgpt.com renders
+    // "Wed, Jul 29 at 8:24 AM". A weekday on its own had a pattern and a date
+    // on its own had a pattern, and the two together had none, so the single
+    // form the site actually shows was the one form that could not match.
+    const DOW = '(?:' + WEEKDAYS + '\\s*,?\\s*)?';
 
     const TIME_LABEL_RES = [
         new RegExp('^(?:today|yesterday)' + AT + '(?:' + CLOCK + ')?$', 'i'),
         new RegExp('^' + WEEKDAYS + AT + '(?:' + CLOCK + ')?$', 'i'),
-        new RegExp('^' + MONTHS + '\\s+\\d{1,2}(?:,?\\s*\\d{4})?' + AT + '(?:' + CLOCK + ')?$', 'i'),
-        new RegExp('^\\d{1,2}\\s+' + MONTHS + '(?:,?\\s*\\d{4})?' + AT + '(?:' + CLOCK + ')?$', 'i'),
+        // Month-first and day-first in one pattern, because the weekday prefix
+        // applies to both and two copies of it would drift apart.
+        new RegExp('^' + DOW + '(?:' + MONTHS + '\\s+\\d{1,2}|\\d{1,2}\\s+' + MONTHS +
+            ')(?:,?\\s*\\d{4})?' + AT + '(?:' + CLOCK + ')?$', 'i'),
         new RegExp('^\\d{4}-\\d{2}-\\d{2}(?:[ T]' + CLOCK + ')?$', 'i'),
         new RegExp('^\\d{1,2}[\\/.]\\d{1,2}[\\/.]\\d{2,4}' + AT + '(?:' + CLOCK + ')?$', 'i'),
         new RegExp('^' + CLOCK + '$', 'i')
