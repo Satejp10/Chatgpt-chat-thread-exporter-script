@@ -223,3 +223,15 @@ Entry format:
 - open: artifacts leave no trace when the connector is mid-render
 - open: test/ predates v5.0, and has no timestamp fixture — this bug was a pure-function failure a single unit test would have caught
 - next: user exports a thread showing `Today <clock>` and reports whether the header label, the per-turn times, or neither appears
+
+## 2026-08-10 | session 13 | web
+- did: added a `## Releases` section to the README with a one-click download link, and pointed the Install section at it. README only; the script is untouched and stays at v5.5.
+- context: there was no releases section and nothing to link to. `git tag -l`, `list_tags` and `list_releases` were all empty — the repo has never been tagged or released, so every reference to "the current version" was a moving pointer at `main`.
+- decided: pin the link to a commit id, not to `main`. A raw URL on `main` changes every time `main` changes, which contradicts the promise the README already makes: the file you reviewed is the file that runs, and it cannot change under you.
+- decided: no release asset either. An uploaded copy of the userscript is a second source of truth that can drift from the file in the repo. One file, one copy.
+- tried and failed: `git tag -a v5.5 && git push origin v5.5` returns HTTP 403. The session's git proxy allows pushes to the designated branch only, so tags cannot be created from here. Fell back to the full commit sha, which is equally immutable and needs no push. A `v5.5` tag would only make the URL prettier; the user can create one from the GitHub UI and the link can be shortened later.
+- note: this adds no auto-update. `@downloadURL` and `@updateURL` stay out of the script. The link is a thing a human clicks once; the installed copy still never phones home, and the Releases section says so in as many words so the link is not mistaken for an update channel.
+- verified: the encoded URL returns HTTP 200 and line 4 of what it serves is `// @version      5.5`. The filename has spaces and parentheses, so `%20`, `%28` and `%29` are required or the markdown link breaks at the first `)`.
+- open: no GitHub Release entry exists; creating one is a web-UI action, and no `create_release` tool is available in this session
+- open: every version bump now needs the README link updated to the new commit. That is the cost of pinning, and it is the intended cost.
+- open: everything from session 12 stands — per-turn timestamp reachability, Claude artifact selectors, artifacts mid-render, stale test/

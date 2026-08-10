@@ -6,10 +6,11 @@ browser.
 
 ## Install
 
-Tampermonkey or Violentmonkey, then add
-`ChatGPT Thread Exporter (Robust Auto-Scroll).user.js`. There is no build step
-and no dependencies. Auto-update is deliberately absent: the file you reviewed
-is the file that runs, and it cannot change under you.
+Tampermonkey or Violentmonkey, then use the download link under
+[Releases](#releases), or copy
+`ChatGPT Thread Exporter (Robust Auto-Scroll).user.js` out of this repo by hand.
+There is no build step and no dependencies. Auto-update is deliberately absent:
+the file you reviewed is the file that runs, and it cannot change under you.
 
 **Upgrading from v4.x:** remove the old *ChatGPT Thread Exporter* entry first.
 v5.0 is named *Chat Thread Exporter*, so your script manager treats it as a new
@@ -21,6 +22,23 @@ An **Export Chat** button appears bottom-right on `chatgpt.com` and `claude.ai`.
 Not on the coding surfaces: `chatgpt.com/codex` and `claude.ai/code` are
 excluded, both in the metadata and again at runtime, because both sites are
 single-page apps and navigating there from a chat does not reload the document.
+
+## Releases
+
+**[Download v5.5](https://raw.githubusercontent.com/Satejp10/Chatgpt-chat-thread-exporter-script/5df70079fe420816a9583be5c2c709b3dbdffb37/ChatGPT%20Thread%20Exporter%20%28Robust%20Auto-Scroll%29.user.js)**
+
+Open that with Tampermonkey or Violentmonkey installed and the script manager
+shows you its install prompt with the full source in it. Nothing installs until
+you say yes.
+
+The link is pinned to a single commit, so the file behind it cannot change after
+you have read it. There is still no auto-update, by design: a new version means
+coming back here and clicking again. That is the same reason `@downloadURL` and
+`@updateURL` are absent from the script itself.
+
+Any other version is the same URL with a different commit id in it. The
+[history of the script file](https://github.com/Satejp10/Chatgpt-chat-thread-exporter-script/commits/main/ChatGPT%20Thread%20Exporter%20%28Robust%20Auto-Scroll%29.user.js)
+lists them, and each version bump is its own commit.
 
 ## What it guarantees
 
