@@ -1,15 +1,18 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.2
+// @version      5.3
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
 // @match        https://claude.ai/*
 // @exclude      https://chatgpt.com/codex*
+// @exclude      https://chatgpt.com/codex/*
 // @exclude      https://chat.openai.com/codex*
+// @exclude      https://chat.openai.com/codex/*
 // @exclude      https://claude.ai/code*
+// @exclude      https://claude.ai/code/*
 // @grant        none
 // ==/UserScript==
 
@@ -462,6 +465,26 @@
 
     const ROLE_LABELS = { user: 'User', assistant: 'Assistant', system: 'System', tool: 'Tool' };
 
+    // Named first so the common two lead the summary; anything else follows in
+    // alphabetical order rather than in whatever order the thread happened to
+    // produce it.
+    const ROLE_ORDER = ['user', 'assistant', 'system', 'tool'];
+
+    function roleCounts(messages) {
+        const counts = Object.create(null);
+        messages.forEach(m => {
+            const k = roleClass(m.role) || 'unknown';
+            counts[k] = (counts[k] || 0) + 1;
+        });
+        const keys = Object.keys(counts).sort((a, b) => {
+            const ia = ROLE_ORDER.indexOf(a);
+            const ib = ROLE_ORDER.indexOf(b);
+            if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+            return a < b ? -1 : 1;
+        });
+        return keys.map(k => ({ role: k, count: counts[k] }));
+    }
+
     function roleLabel(role) {
         if (ROLE_LABELS[role]) return ROLE_LABELS[role];
         const clean = String(role || 'unknown').replace(/[^a-z0-9 _-]/gi, '');
@@ -877,6 +900,7 @@
             messages,
             stats: {
                 count: messages.length,
+                byRole: roleCounts(messages),
                 emptySkipped,
                 artifacts: artifactCount,
                 duplicates,
@@ -906,6 +930,12 @@
         if (meta.url) lines.push('source: ' + JSON.stringify(meta.url));
         lines.push('exported: ' + stats.capturedAt.toISOString());
         lines.push('messages: ' + stats.count);
+        // Nested so the split is machine-readable without inventing a key per
+        // role, and so a thread with system or tool turns reports them too.
+        if (stats.byRole && stats.byRole.length) {
+            lines.push('messages_by_role:');
+            stats.byRole.forEach(r => lines.push('  ' + r.role + ': ' + r.count));
+        }
         lines.push('capture: ' + (stats.complete ? 'complete' : 'possibly-truncated'));
         if (!stats.complete && stats.reasons.length) {
             lines.push('capture_notes: ' + JSON.stringify(stats.reasons.join('; ')));
@@ -1246,6 +1276,10 @@ html.js .wrap { padding-right: 44px; }
             }
         });
 
+        const roleSummary = stats.byRole && stats.byRole.length > 1
+            ? ' (' + stats.byRole.map(r => r.count + ' ' + escapeHtml(r.role)).join(', ') + ')'
+            : '';
+
         const flag = stats.complete
             ? '<span class="flag-ok">complete</span>'
             : '<span class="flag-warn">possibly truncated</span>';
@@ -1305,7 +1339,7 @@ html.js .wrap { padding-right: 44px; }
             '<h1>' + title + '</h1>\n' +
             '<p class="meta">Exported <time datetime="' + escapeHtml(iso) + '">' +
             escapeHtml(stats.capturedAt.toLocaleString()) + '</time> · ' +
-            stats.count + ' messages · capture: ' + flag + '</p>\n' +
+            stats.count + ' messages' + roleSummary + ' · capture: ' + flag + '</p>\n' +
             startedBlock +
             dupBlock +
             sourceBlock +
@@ -1555,6 +1589,10 @@ html.js .wrap { padding-right: 44px; }
     // -----------------------------------------------------------------------
 
     function addExportButton() {
+        // Checked here as well as in refresh(). This is the only function that
+        // injects the button, so putting the guard on it means no future call
+        // site can reintroduce it on a coding surface by forgetting the check.
+        if (onExcludedPath()) return;
         if (document.querySelector('.export-chat-btn')) return;
         const btn = el('button', {
             'class': 'export-chat-btn',

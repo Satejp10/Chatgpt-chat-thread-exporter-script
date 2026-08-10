@@ -165,3 +165,22 @@ Entry format:
 - open: whether chatgpt.com renders a session timestamp the patterns can see
 - open: test/ still predates v5.0 and would have caught none of this, since the fixture does not remount turns
 - next: user re-exports the same Claude thread and confirms 14 messages, no repeats, dialog closes on its own
+
+## 2026-08-10 | session 9 | web
+- did: v5.3 — per-role message counts in both exports, and hardened the coding-surface exclusion
+- did: cross-checked the user's second live export against the v5.2 fix. 18 articles, 18 unique by role plus full text, zero duplicates, 9 user and 9 assistant, header count and rail agreeing. The v5.2 dedup fix is confirmed working on real data.
+- note: `merged_duplicates` was absent from that export, so no content-key merge occurred. The WeakSet alone handled it. The fix is proven; the content-key fallback beneath it is still unexercised on a live thread.
+- decided: report counts per role, because the whole reason the v5.2 bug was caught is that the user knew how many prompts they had sent and the total did not match. A bare total is not checkable; a split against your own prompt count is.
+- decided: nested `messages_by_role` rather than a key per role, so system and tool turns report without inventing frontmatter keys, and the HTML header carries the same split inline.
+- did: added the exclusion guard to `addExportButton()` itself, on top of the one in `refresh()`. It is the only function that injects the button, so the guard cannot be bypassed by a future call site forgetting to check.
+- did: broadened the `@exclude` globs with explicit `/*` variants, since managers differ on whether a trailing `*` crosses a path separator.
+- found (unresolved): user reports the button still appears on `chatgpt.com/codex/cloud`. The code is correct — `/^\/codex(?:\/|$)/i` matches `/codex/cloud`, and the metadata excludes it. Leading hypothesis is that the v4.2 entry is still installed alongside v5.x: it is ChatGPT-only with no excludes, which fits the symptom exactly, since `claude.ai/code` was not reported as broken and v4.2 does not match that host at all. Second hypothesis is a tab predating the update. Both are install-state, not code.
+- correction to the session-6 decision on renaming `@name`: it was taken knowingly, with a README note as the mitigation. A README note is not a mitigation for a duplicate install, because the person who needs it has already installed. The cost of that rename is now showing up as a bug report against code that is correct.
+- found: a real defect, NOT fixed this session, flagged for the user. An image-only turn yields no text, is counted into `emptySkipped`, generates a reason string — and then the reason is discarded, because reasons only render when `!complete` and `emptySkipped` does not affect `complete`. The turn is dropped and the file still says `capture: complete`. Visible in the user's export as two consecutive assistant turns where the prompt between them is missing. Present since v4.0. This is precisely the silent-omission failure the project exists to prevent.
+- found: the same export marked zero artifacts where the previous one marked three. The MindMap connector was still rendering ("Connecting to MindMap..."), so no iframe existed to mark. The exporter recorded what was on screen, which is correct, but the practical result is that the mindmaps left no trace.
+- note: no network calls, no `innerHTML`, no eval, no auto-update, no credentials. Re-grepped; clean. `node --check` passes.
+- open: silent empty-turn drops. Ranked first on the unfixed list.
+- open: Claude artifact selectors still unverified; only the iframe fallback has ever matched
+- open: whether chatgpt.com renders a session timestamp the patterns can see
+- open: test/ still predates v5.0
+- next: user confirms whether a stale v4.2 entry is installed, and re-exports to see the role split

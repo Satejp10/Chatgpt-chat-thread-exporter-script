@@ -83,7 +83,18 @@ disabled the rail degrades to a plain list of anchor links at the top and
 everything stays readable.
 
 **Markdown** — YAML frontmatter with the export time, message count and capture
-flag, plus the title and source URL when those are included. Turns are numbered
+flag, plus the title and source URL when those are included. The count is also
+broken down by role, so a total that looks wrong can be checked against the
+number of prompts you actually sent:
+
+```yaml
+messages: 18
+messages_by_role:
+  user: 9
+  assistant: 9
+```
+
+The HTML header carries the same split inline: `18 messages (9 user, 9 assistant)`. Turns are numbered
 (`## [7] User`) so a parser can check the sequence runs 1..N against the
 declared count.
 
