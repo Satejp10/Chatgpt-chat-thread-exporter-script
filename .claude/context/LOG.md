@@ -93,7 +93,24 @@ Entry format:
 - next: user confirms on the live site that no Copy buttons appear on messages and the Export Chat button still does
 
 ## 2026-08-10 | session 5 | web
+- did: PR #4 merged to main as a944265, closing the v4.2 work. No code changed this session.
+- did: wrote down the timestamp blocker properly, because the reason it was never built existed only as a one-line `open:` and would not have survived a fresh pickup
+- confirmed: still zero per-message timestamp code in the userscript. A grep for `time|timestamp|datetime` returns only `setTimeout` calls, the `<time datetime>` element in `renderHtml` that carries the *export* time, and unrelated comments. The only time in any export is `stats.capturedAt`, which is when the export ran, not when a message was sent.
+- found: chatgpt.com does render a per-message time. First hard evidence in this project — a user screenshot showing `Yesterday 8:30 PM` above a user turn. Until now every rung of the timestamp source ladder was a guess with nothing behind it.
+- found: the rendered value is *relative* (`Yesterday`), not a date. This is the crux. A relative label cannot be exported as-is: turning it into a date means resolving it against the capture time, which is synthesis, and the never-synthesize invariant forbids that. The usual pattern is an absolute value hiding in a `title` or `datetime` attribute on the same element, which is exactly what a DOM sample would show. Unconfirmed either way.
+- found: the label appears to sit above a turn *group*, not on every message, so it may date a block rather than each turn. Unconfirmed.
+- decided: the blocker is now two specific artefacts, not the vague "a DOM sample". (1) the `outerHTML` of the `Yesterday 8:30 PM` element, (2) whether hovering it reveals a full-date tooltip. Both are about ten seconds of work on the live page and neither can be obtained from the fixture or from here. `docs/ref/` still does not exist.
+- estimated: 1–2 KB of script, a few bytes per message in the export. Explicitly an estimate, not a measurement — it cannot be measured before the markup is known. The durable cost is a new chatgpt.com selector to maintain, and those break on redesign.
+- rejected (restated, so it is not re-proposed): the authenticated conversation API as a timestamp source. It is a network call, and "this script never touches the network" is the tool's main promise.
+- open: whether test/ stays, and whether the conventions should move into a CLAUDE.md — asked four times now, still unanswered. Stopping the ask; will act only if raised.
+- open: user has not yet confirmed v4.2 on the live site (no Copy buttons on messages, Export Chat still bottom-right)
+- did: generated status report SR-chatgpt-chat-thread-exporter-script-002, superseding 001. Report 001 was delivered to chat. 002 carries a dedicated §2.8 "Why there are no timestamps" so the reason survives a cold pickup.
+- note: the test suite was not re-run this session, at the user's standing instruction that they run tests themselves. Static checks only: node --check, size, metadata block, forbidden-API greps, all clean. Assertion counts in the report are carried forward from session 4 and tagged as such.
+- next: nothing in flight. Work resumes when the element markup lands.
+
+## 2026-08-10 | session 6 | web
 - did: v5.0 — added claude.ai support behind a site-adapter layer, and artifact/embedded-view markers
+- note: renumbered from session 5 to 6 on merge. Session 5 ran in parallel on main (report 002, the timestamp write-up) and claimed the slot first; this session branched from a944265 and never saw it.
 - decided: a site contributes exactly four things (find message elements, tell whose turn it is, name the conversation, name the file). Scroller, walker, both renderers, rail and modal were already site-agnostic and were not touched, so the port is additive rather than a rewrite.
 - found: ChatGPT's coupling was thinner than expected — `MSG_SELECTOR`, `data-message-author-role`, `data-message-id`, the title suffix and the filename prefix. Nothing else in 1132 lines knew what site it was on.
 - decided: Claude gets a *list* of candidate layouts (`testid`, `msg-class`, `legacy`) resolved against the live page, because it has no role attribute and its class names have changed more than once. First layout matching both roles wins and is cached; a layout matching one role is used but not cached, since a new chat legitimately shows one role.
