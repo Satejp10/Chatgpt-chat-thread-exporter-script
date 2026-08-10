@@ -235,3 +235,17 @@ Entry format:
 - open: no GitHub Release entry exists; creating one is a web-UI action, and no `create_release` tool is available in this session
 - open: every version bump now needs the README link updated to the new commit. That is the cost of pinning, and it is the intended cost.
 - open: everything from session 12 stands — per-turn timestamp reachability, Claude artifact selectors, artifacts mid-render, stale test/
+
+## 2026-08-11 | session 14 | web
+- did: v5.6 — taught the date recogniser the `Wed, Jul 29 at 8:24 AM` form, which is what chatgpt.com actually renders at the top of a thread.
+- root cause: a gap in the pattern list, not the DOM. Pattern 2 accepted a weekday alone (`Monday 9:15 AM`), pattern 3 accepted a month-day alone (`Jul 29 at 8:24 AM`), and nothing accepted a weekday followed by a month-day. The one form the site shows was the one form with no pattern.
+- second time the same block has shipped a comment whose own example the code beneath it rejects. v5.5 was `Yesterday 8:30 PM` above the `AT` token; this one is `Wednesday, September 10, 2026 at 11:45 PM` above `MAX_LABEL_LEN`. Both now pass. The lesson is not "write better comments", it is that this block has no test and every check of it has been manual.
+- fix: `DOW = '(?:' + WEEKDAYS + '\s*,?\s*)?'`, an optional weekday prefix, and patterns 3 and 4 merged into one so the prefix applies to month-first and day-first without two copies drifting apart. Patterns 1, 2, 5, 6, 7 untouched. `AT`, `MAX_LABEL_LEN`, the anchors, `readTimeLabel()` and `findTimeFor()` all untouched.
+- verified: 28 cases, 18 accept and 10 reject, all passing. Rejects include `Wed, Jul 29 at 8:24 AM and then everything broke`, which is the widening risk in its most direct form and is caught by the closing anchor. `node --check` passes.
+- v5.5 neither caused this nor helped it. Two independent gaps in one list, found in consecutive sessions from two different user exports.
+- decided against: the user first asked for an active-date model where every message after a separator inherits its label. Declined and the user agreed. `Wed, Jul 29 at 8:24 AM` carries a clock, so stamping it on the fourth turn asserts a time the page never showed. That is the "never synthesize" invariant, and it also contradicted the user's own "missing metadata should remain missing" line in the same brief.
+- deferred: emitting date separators as their own ordered entries between messages. That is the honest way to show grouping, and it needs `collect()` to walk the container in document order rather than iterating message nodes. Separate work.
+- note: the recogniser is site-agnostic, so claude.ai gets the same widening at no cost. Whether claude.ai renders this form is untested.
+- open: the DOM half is still unproven. Nothing has ever reached `findTimeFor()` with an accepted label, so the sibling walk has not been tested even once. The next export decides it: header label plus per-turn times means done, header only means the walk cannot reach mid-thread separators, neither means the walk is the primary blocker.
+- open: README download link is pinned to a commit and now points at v5.5. Updated in a follow-up commit that references this one, since a commit cannot contain its own sha.
+- open: Claude artifact selectors still unverified; artifacts leave no trace mid-render; test/ predates v5.0 and would have caught both timestamp bugs with one table-driven unit test
