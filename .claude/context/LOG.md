@@ -145,3 +145,23 @@ Entry format:
 - open: test/ still predates v5.0, no Claude fixture, no coverage of any of this
 - open: artifact contents and inline visualizations remain unexported, marked only
 - next: user exports a thread that shows a session time and confirms the label lands in the frontmatter and beside the turn
+
+## 2026-08-10 | session 8 | web
+- did: v5.2 — fixed the duplicate-turn bug found by the first real claude.ai export, stopped the dialog reappearing after download, excluded the coding surfaces
+- found: FIRST REAL RUN OF ANY VERSION AGAINST A LIVE SITE. Everything before this was verified against a synthetic fixture. It found a bug in one export.
+- found: a 14-message Claude thread exported as 29. Analysed the user's file: 29 articles, 14 unique by role plus full text, one turn duplicated five times, another four times. The capture flag said `complete`, which it was — the extra turns were not missing content, they were the same content collected repeatedly.
+- root cause: `domPath`, the positional dedup key used when a site has no message id. It is an index chain among siblings, and virtualization renumbers siblings constantly. A remounted turn lands at a different index and reads as a brand new message. ChatGPT never exposed this because `data-message-id` always won; Claude has no id, so every turn took the positional path.
+- correction to v5.0: the session-6 entry claimed Claude "always takes the positional path" as a neutral fact. It was the bug, written down as a design note and not recognised. The nesting-dedup work in that session addressed a different duplicate source and gave false confidence that duplicates were handled.
+- decided: identity is now the site's message id where one exists, otherwise role plus the *full* text. Full, never a prefix — a 50-char prefix was tried in v4.0 and merged genuinely distinct short turns. Verified against the user's export: role + full text yields exactly 14 from 29.
+- decided: a WeakSet of nodes sits in front of the content key. It stops re-collecting a node still on screen, which is most passes, and it means the content key is only computed for genuinely new nodes. Net cost is lower than the old `domPath` call per node per pass.
+- decided: every merge is counted and reported (`merged_duplicates`), because content identity can over-merge two byte-identical turns and the project's rule is that nothing is dropped silently. The residual risk is now visible rather than eliminated.
+- broke/fixed: the export dialog reappeared after a successful download. Not a new bug in the usual sense — v5.1 deliberately held it open to report skipped artifacts, and since the overlay is hidden during the run, that read to the user as the popup opening a second time. Reverted: a complete capture closes the dialog regardless of artifacts. The file's own header already reports them prominently.
+- did: excluded `chatgpt.com/codex` and `claude.ai/code` via `@exclude`, backed by a runtime `location.pathname` check in `refresh()` that also removes an already-injected button. `@exclude` alone is insufficient: both sites are single-page apps, so navigating from a chat to the coding surface never reloads the document.
+- found: the Claude artifact selectors did NOT match. All three placeholders in the user's export came from the generic `IFRAME` branch, labelled "embedded view". The hedge worked; the guesses did not. Real selectors still unknown.
+- found: no timestamp was captured on claude.ai. Either the page renders none on that view or the patterns missed it. The user's original observation may have been about chatgpt.com. Unresolved, and it fails silently by design.
+- note: the exported artifact placeholders are preceded by the literal text "MindMap MindMap" from the tool-use header and card label. Cosmetic, left alone.
+- note: no network calls, no `innerHTML`, no eval, no auto-update, no credentials. Re-grepped; clean. `node --check` passes.
+- open: Claude artifact selectors are still unverified guesses; only the iframe fallback works
+- open: whether chatgpt.com renders a session timestamp the patterns can see
+- open: test/ still predates v5.0 and would have caught none of this, since the fixture does not remount turns
+- next: user re-exports the same Claude thread and confirms 14 messages, no repeats, dialog closes on its own

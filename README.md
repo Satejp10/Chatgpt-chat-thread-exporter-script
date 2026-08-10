@@ -18,6 +18,10 @@ on every ChatGPT page.
 
 An **Export Chat** button appears bottom-right on `chatgpt.com` and `claude.ai`.
 
+Not on the coding surfaces: `chatgpt.com/codex` and `claude.ai/code` are
+excluded, both in the metadata and again at runtime, because both sites are
+single-page apps and navigating there from a chat does not reload the document.
+
 ## What it guarantees
 
 - **No network access.** No `fetch`, `XMLHttpRequest`, `sendBeacon`, WebSocket,
@@ -125,6 +129,23 @@ did contain no artifacts. Text, links and code blocks around them are unaffected
 This is separate from the capture flag on purpose. A truncated capture means the
 exporter does not know what it missed. A marked artifact means it knows exactly
 what it missed and where.
+
+## Duplicate turns
+
+Turn identity comes from the site's own message id where there is one. ChatGPT
+provides `data-message-id`; Claude does not, so identity there is the role plus
+the **full** text of the turn.
+
+That matters because both sites remount turns while you scroll. Keying on the
+turn's position in the DOM, which is what v5.0 and v5.1 did, breaks under
+exactly that: the same turn comes back at a different index and reads as new.
+A real 14-message Claude thread exported as 29, one turn appearing five times.
+
+Full text, never a prefix. A 50-character prefix was tried in v4.0 and merged
+genuinely distinct short turns. The remaining risk runs the other way: two
+turns with byte-identical text collapse into one. So every merge is counted and
+the count is written into the export (`merged_duplicates` in the frontmatter, a
+line in the HTML header). If that number looks wrong, it is visible.
 
 ## Site support
 
