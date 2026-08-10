@@ -128,3 +128,20 @@ Entry format:
 - open: test/ predates v5.0 and asserts the old filename prefix and generator string, so parts of it fail against the current script. No Claude fixture exists.
 - open: timestamps still blocked on a live DOM sample in docs/ref/
 - next: user installs v5.0, removes the v4.2 entry, and reports which Claude layout resolves (or the refusal message if none does)
+
+## 2026-08-10 | session 7 | web
+- did: v5.1 — timestamps, finally, and a pre-scroll instruction in the export modal
+- found: the blocker dissolved. The user reported that a session date and time is rendered on the page and visible while scrolling, which is exactly the evidence report 002 said was missing. No `docs/ref/` sample was needed in the end: the answer was "capture what is visible", not "identify the one true selector".
+- decided: transcribe, never resolve. A relative label (`Yesterday 8:30 PM`) is exported as that literal string. Turning it into a date means computing it against the capture time, and a computed timestamp is one the page never showed — that is the never-synthesize invariant, and it holds. The absolute export time sits directly above it in both formats, so a reader can anchor it and check the arithmetic.
+- decided: detect labels structurally, not by class name. A `<time>` element wins outright; otherwise an element whose *entire* trimmed text matches a date/time pattern and is under 48 chars. This has no chatgpt.com or claude.ai selectors in it at all, so unlike the timestamp designs considered in sessions 1-5 it cannot break on a renderer change. That is why it could be built without a DOM sample.
+- decided: search a bounded neighbourhood before each turn (6 previous siblings across 4 ancestor levels) and stop dead on hitting the previous turn. Unbounded search eventually finds an unrelated date elsewhere on the page and staples it to the wrong message, which is worse than reporting nothing.
+- decided: a turn with no rendered label gets no timestamp and never inherits the one above it, because "the page showed nothing here" and "the page showed the same thing here" are different claims. Same invariant as a withheld URL being omitted rather than blanked.
+- decided: `exact` (from `<time datetime>` or a `title` attribute) is copied, never parsed. If the attribute is malformed that is the page's statement, and rewriting it would be synthesis by another route.
+- decided: the label is read on first sight of a turn, inside `collect()`, because the neighbourhood is still mounted then. After the scroller moves past, virtualization may have removed it.
+- did: added a standing pre-scroll instruction to the export modal (scroll to top, let history load, come back down) plus the tab-visibility warning, which until now only appeared in the loader after the run had already started. Advisory only; it changes nothing about what is captured.
+- note: claude.ai support was already merged as v5.0 in PR #6, so this session sits on top of it rather than before it. The user's ordering request was based on v5.0 not yet being in.
+- note: no network calls, no `innerHTML`, no eval, no auto-update, no credentials. Re-grepped; clean. `node --check` passes.
+- open: the label patterns are unverified against either live site. They are structural rather than selector-based, so the failure mode is a missed label (no timestamp written) rather than a wrong one, but a real run is what confirms the shape of what chatgpt.com actually renders.
+- open: test/ still predates v5.0, no Claude fixture, no coverage of any of this
+- open: artifact contents and inline visualizations remain unexported, marked only
+- next: user exports a thread that shows a session time and confirms the label lands in the frontmatter and beside the turn
