@@ -208,3 +208,18 @@ Entry format:
 - open: whether chatgpt.com renders a session timestamp the patterns can see
 - open: test/ still predates v5.0, and would not have caught this — no fixture has an image-only turn
 - next: user tests v5.4 on a phone and on an image-heavy thread. If an image-only prompt now appears in the export, the oldest bug in the tool is closed.
+
+## 2026-08-10 | session 12 | web
+- did: v5.5 — fixed the timestamp patterns, which have never matched anything on a live page.
+- root cause was one token. `AT`, the join between a date word and a clock, was `(?:\s*(?:at|,)\s*)?`: the whole group optional, but `at` or `,` mandatory inside it. Against `Today 7:58 AM` the group matches empty, `CLOCK` then faces a leading space, `\d{1,2}` cannot consume it, and the match dies. Only the bare halves and the literal-`at` form ever passed. Date-space-clock, which is the form both sites actually render, was the one shape excluded.
+- the code comment in that very section cited "Yesterday 8:30 PM" as the motivating example, and that string fails the patterns it sits above. The example was written from the page and the regex was written separately; nobody checked one against the other.
+- fix: `(?:\s*(?:at|,)?\s*)?` — optional INSIDE the separator rather than an alternative to it. Verified 11 accept cases and 7 reject cases, the rejects being prose that opens with a date word ("Today I finished the migration", "May 10 people join the call", "Sat down and wrote 500 words"). Anchors, `MAX_LABEL_LEN` and the whole-text-must-match rule in `readTimeLabel()` are untouched, so the widening admits exactly date + whitespace + clock and nothing longer.
+- diagnosed from the user's own export: 4 messages, no `started_label`, no *Thread starts* line, no per-turn times, while the page visibly showed `Today 7:58 AM`. The export was the evidence; no DOM sample was needed.
+- note: a second blocker may sit behind this one and cannot be proven without markup. `findTimeFor()` only inspects previous siblings across 8 ancestor levels and stops at the previous turn, so a label rendered INSIDE a turn container is invisible to it. The next export distinguishes the two: `started_label` present but per-turn times absent means the walk is the remaining problem.
+- context: user ran a third-party audit of the repo. It is accurate on architecture but quotes v5.3 (`complete` without `!emptySkipped`, `IMG` in `SKIP_TAGS`), both changed in v5.4 hours earlier. Its P0 "separate scroll completeness from message completeness" is now partly done. Its remaining P0 items — canonical message identity, ordering reconciliation, Claude fixtures — are real and unaddressed.
+- note: no network calls, no `innerHTML`, no eval, no auto-update, no credentials. `node --check` passes. `@name` and `@namespace` untouched.
+- open: whether per-turn timestamps are reachable by the sibling walk
+- open: Claude artifact selectors still unverified; only the iframe fallback has ever matched
+- open: artifacts leave no trace when the connector is mid-render
+- open: test/ predates v5.0, and has no timestamp fixture — this bug was a pure-function failure a single unit test would have caught
+- next: user exports a thread showing `Today <clock>` and reports whether the header label, the per-turn times, or neither appears

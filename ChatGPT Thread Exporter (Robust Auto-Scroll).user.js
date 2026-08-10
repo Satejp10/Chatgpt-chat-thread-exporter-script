@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.4
+// @version      5.5
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
@@ -300,7 +300,13 @@
     const MONTHS = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*';
     const WEEKDAYS = '(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*';
     const CLOCK = '\\d{1,2}[:.]\\d{2}(?:\\s*[ap]\\.?m\\.?)?';
-    const AT = '(?:\\s*(?:at|,)\\s*)?';
+    // The join between a date and a clock. `at` and the comma are optional
+    // INSIDE the separator, not alternatives to it: v5.1 required one of them,
+    // so whitespace alone did not join the two halves and "Today 7:58 AM" —
+    // the form both sites actually render — failed to match. Only "Today at
+    // 7:58 AM" and the bare halves ever worked, which is why no export has
+    // carried a timestamp yet.
+    const AT = '(?:\\s*(?:at|,)?\\s*)?';
 
     const TIME_LABEL_RES = [
         new RegExp('^(?:today|yesterday)' + AT + '(?:' + CLOCK + ')?$', 'i'),
