@@ -237,6 +237,18 @@ top to bottom yourself first.
 See [`test/README.md`](test/README.md). The userscript stays dependency-free;
 the tests are separate tooling.
 
-The suite predates v5.0 and still asserts the old `chatgpt-export` filename and
-`generator: ChatGPT Thread Exporter` line, so parts of it fail against the
-current script. There is also no Claude fixture yet. Both are outstanding.
+The suite stopped running against v5.0 and nobody noticed until v5.6. It was
+not asserting the wrong things, which is what this section used to say; it was
+not reaching its assertions at all. The unit half threw at import, because v5.0
+resolves a site adapter from `location.hostname` at load and the Node harness
+had no `location`. The end-to-end half loaded its fixture over `file://`, where
+the hostname is empty, so the script correctly declined to add its button and
+every capture check timed out waiting for it.
+
+Both are fixed: the harness stubs the environment it needs, and the fixture is
+served under the real hostname so the page origin is one the script recognises.
+The timestamp recogniser, which shipped broken twice, now has a table of the
+labels both sites actually render.
+
+There is still no Claude fixture, so `claude.ai` selectors, artifact markers and
+image-only turns have no automated coverage. That is the largest remaining gap.
