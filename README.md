@@ -25,7 +25,7 @@ single-page apps and navigating there from a chat does not reload the document.
 
 ## Releases
 
-**[Download v5.6](https://raw.githubusercontent.com/Satejp10/Chatgpt-chat-thread-exporter-script/6be8b12216516c6eb9a4b2b4d26b7791acaadd65/ChatGPT%20Thread%20Exporter%20%28Robust%20Auto-Scroll%29.user.js)**
+**[Download v5.7](https://raw.githubusercontent.com/Satejp10/Chatgpt-chat-thread-exporter-script/b4a12f7ee9fad4c7598d5b42585ff0361a0b50f7/ChatGPT%20Thread%20Exporter%20%28Robust%20Auto-Scroll%29.user.js)**
 
 Open that with Tampermonkey or Violentmonkey installed and the script manager
 shows you its install prompt with the full source in it. Nothing installs until
@@ -65,6 +65,15 @@ Every export states whether that worked. The HTML header and the Markdown
 frontmatter carry `capture: complete` or `capture: possibly-truncated` with the
 reason. If it is not complete, the exporter says so before you close the dialog.
 An archive that quietly drops messages is worse than no archive.
+
+The last thing it does is go back to the bottom and check the end of the thread
+again. Until v5.7 it did not, and the final two or three turns of a thread could
+be missing from a file that still said `capture: complete`. Both sites unmount
+what is off screen, the scroll to the top at the start of a capture takes the
+end of the thread out of the page, and the descent did not always give it long
+enough to come back. A turn that is never in the page cannot be counted as
+dropped, so nothing noticed. When that final pass recovers anything, it says so:
+`tail_recovered` in the Markdown frontmatter, a line in the HTML header.
 
 **Scroll the thread yourself first.** Go to the very top, wait for the older
 messages to appear, then come back down. The exporter does this on its own, but
