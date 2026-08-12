@@ -284,3 +284,4 @@ Entry format:
 - deferred: a `claude.ai` e2e fixture. It is the largest real coverage gap — Claude selectors, artifact markers and image-only turns have never been exercised — and it needs a write-run-fix loop that the rule above puts on the user's side. Better deferred than shipped broken.
 - open: unchanged otherwise — Claude artifact selectors unverified, artifacts leave no trace mid-render, no tag or Release for any version, no CLAUDE.md.
 - next: user runs `cd test && npm install && npm test` and reports. Fix whatever it names, then the Claude fixture.
+- did: added `CLAUDE.md`, closing a long-standing open item. It carries the no-tests rule first, because a rule that lives only in a log entry is a rule the next session may not read. Also carries the userscript's invariants and the do-not-rename-`@name` rule from session 10.
