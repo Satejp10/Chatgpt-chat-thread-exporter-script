@@ -7,7 +7,19 @@ const { findChromium } = require('./browser.js');
 const REPO = path.join(__dirname, '..');
 const FILE = 'ChatGPT Thread Exporter (Robust Auto-Scroll).user.js';
 const HERE = __dirname;
-const FIXTURE = 'file://' + path.join(HERE, 'fixture.html');
+
+// The fixture is served under the real hostname, not from file://.
+//
+// v5.0 made the script site-aware: `pickSite()` reads location.hostname and
+// everything downstream is gated on it, so on file:// (hostname '') the button
+// is never added and every capture assertion below times out. The suite ran
+// green against v4.x and has been failing to even reach its own assertions
+// since. A local server plus Chromium's --host-resolver-rules gives a page
+// whose origin really is http://chatgpt.com, which is what the script expects
+// and what localStorage needs anyway.
+const ORIGINS = { chatgpt: 'http://chatgpt.com', claude: 'http://claude.ai' };
+const FIXTURE = ORIGINS.chatgpt + '/fixture.html';
+const isFixtureUrl = u => Object.values(ORIGINS).some(o => u.startsWith(o + '/'));
 
 // Optional regression baseline: the pre-audit v3.0 script. Used only to show
 // the capture fix is real. Set BASELINE_REF to another commit, or leave it
@@ -33,7 +45,7 @@ async function capture(browser, src, label, prefs) {
   const ctx = await browser.newContext({ acceptDownloads: true });
   const page = await ctx.newPage();
   const requests = [];
-  page.on('request', r => { if (!r.url().startsWith('file://')) requests.push(r.url()); });
+  page.on('request', r => { if (!isFixtureUrl(r.url())) requests.push(r.url()); });
   page.on('dialog', d => d.dismiss());
   await page.goto(FIXTURE);
   await page.evaluate(src);
@@ -62,8 +74,10 @@ async function capture(browser, src, label, prefs) {
   };
 }
 
-// localStorage is unavailable on file:// (Chromium treats it as an opaque
-// origin), so the persistence checks need a real origin to run against.
+// Serves the fixture directory. Chromium is pointed at it by hostname (see
+// --host-resolver-rules below), so every page in this suite loads from a real
+// origin: the script's site adapter needs the hostname and localStorage needs
+// a non-opaque origin, and file:// gives neither.
 function serveTestDir() {
   const http = require('http');
   const server = http.createServer((req, res) => {
@@ -80,7 +94,15 @@ function serveTestDir() {
 }
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: findChromium() });
+  // Both hostnames resolve to the local server. MAP rewrites the resolution
+  // only, so the page's origin stays http://chatgpt.com (or http://claude.ai)
+  // and the script sees the host it is written for.
+  const { server, port } = await serveTestDir();
+  const browser = await chromium.launch({
+    executablePath: findChromium(),
+    args: ['--host-resolver-rules=MAP chatgpt.com 127.0.0.1:' + port +
+           ',MAP claude.ai 127.0.0.1:' + port]
+  });
 
   console.log('\n=== Capture completeness on a 120-message lazy-loading thread ===');
   let before = null;
@@ -230,7 +252,6 @@ function serveTestDir() {
 
   // -------------------------------------------------- preference persistence
   console.log('\n=== Preference persistence (http origin) ===');
-  const { server, port } = await serveTestDir();
   const pCtx = await browser.newContext();
   const pPage = await pCtx.newPage();
   const openModal = async () => {
@@ -242,7 +263,7 @@ function serveTestDir() {
     title: await pPage.isChecked('#cge-pref-title')
   });
 
-  await pPage.goto('http://127.0.0.1:' + port + '/fixture.html');
+  await pPage.goto(FIXTURE);
   await pPage.evaluate(newSrc);
   await pPage.waitForTimeout(300);
 
