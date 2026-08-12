@@ -66,6 +66,15 @@ frontmatter carry `capture: complete` or `capture: possibly-truncated` with the
 reason. If it is not complete, the exporter says so before you close the dialog.
 An archive that quietly drops messages is worse than no archive.
 
+The last thing it does is go back to the bottom and check the end of the thread
+again. Until v5.7 it did not, and the final two or three turns of a thread could
+be missing from a file that still said `capture: complete`. Both sites unmount
+what is off screen, the scroll to the top at the start of a capture takes the
+end of the thread out of the page, and the descent did not always give it long
+enough to come back. A turn that is never in the page cannot be counted as
+dropped, so nothing noticed. When that final pass recovers anything, it says so:
+`tail_recovered` in the Markdown frontmatter, a line in the HTML header.
+
 **Scroll the thread yourself first.** Go to the very top, wait for the older
 messages to appear, then come back down. The exporter does this on its own, but
 a thread the browser has already rendered captures faster and is far less likely

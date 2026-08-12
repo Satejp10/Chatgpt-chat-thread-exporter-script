@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.6
+// @version      5.7
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
@@ -44,6 +44,12 @@
     const MAX_TOP_SEEKS = 400;   // hard ceiling on the lazy-prepend seek loop
     const STEP_SETTLE_MS = 220;
     const TOP_SETTLE_MS = 450;
+    // The tail settle, phase C. Slower and more patient than the descent: it
+    // runs once, at the end, and the descent's 220ms step is what let the last
+    // turns escape in the first place.
+    const TAIL_PASSES = 4;
+    const MAX_TAIL_SEEKS = 24;
+    const TAIL_SETTLE_MS = 450;
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -929,6 +935,37 @@
             say('Capturing conversation...\n' + pct + '%\n' + messages.length + ' messages found');
         }
 
+        // -- Phase C: settle at the bottom -----------------------------------
+        // The turns at the very end of a thread were being lost. Phase A scrolls
+        // to the top before anything is collected, which unmounts them, and the
+        // descent then arrives at the bottom and gives the site three 220ms
+        // passes to put them back. That is not always long enough, and when it
+        // is not, the turns are absent from `messages` and from `emptySkipped`
+        // alike — never in the DOM, so never counted — and the file called
+        // itself complete while missing its last few turns.
+        //
+        // So the bottom gets its own phase: re-assert it and keep collecting
+        // until several passes in a row come back empty. Deliberately at the END
+        // of the capture and not before phase A. `messages` is append-ordered,
+        // so a turn collected here lands last, which is where it belongs.
+        // Collecting the same turns before phase A would have put the tail of
+        // the conversation at the top of the file.
+        let tailRecovered = 0;
+        let tailStable = 0;
+        let tailSeeks = 0;
+        while (tailStable < TAIL_PASSES && tailSeeks < MAX_TAIL_SEEKS) {
+            ctl.setTop(ctl.height());
+            await sleep(TAIL_SETTLE_MS);
+            const added = collect();
+            if (added === 0) tailStable++; else { tailStable = 0; tailRecovered += added; }
+            tailSeeks++;
+            if (!reachedBottom && ctl.atBottom()) reachedBottom = true;
+            say('Checking the end of the thread...\n' + messages.length + ' messages found');
+        }
+        // Ran out of attempts with turns still arriving. The end of the thread
+        // was still moving when the capture stopped, so it may be short.
+        const tailSettled = tailSeeks < MAX_TAIL_SEEKS;
+
         ctl.setTop(originalTop);
 
         const hitCeiling = steps >= MAX_DOWN_STEPS;
@@ -936,10 +973,11 @@
         // the reason string was built and then never shown, because reasons are
         // only rendered when the capture is flagged incomplete. A thread missing
         // one of its prompts was reporting itself as complete.
-        const complete = topConverged && reachedBottom && !hitCeiling && !emptySkipped;
+        const complete = topConverged && reachedBottom && tailSettled && !hitCeiling && !emptySkipped;
         const reasons = [];
         if (!topConverged) reasons.push('the top of the thread was never reached');
         if (!reachedBottom) reasons.push('the bottom of the thread was never reached');
+        if (!tailSettled) reasons.push('the end of the thread was still loading when the capture stopped');
         if (hitCeiling) reasons.push('the scroll-step ceiling was hit');
         if (emptySkipped) reasons.push(emptySkipped + ' turn(s) yielded no text and were dropped');
         // Listed last, and only when something actually went wrong: it is the
@@ -956,6 +994,7 @@
                 emptySkipped,
                 artifacts: artifactCount,
                 duplicates,
+                tailRecovered,
                 started,
                 timestamped: messages.filter(m => m.time).length,
                 app: SITE.label,
@@ -1009,6 +1048,10 @@
         // Only meaningful on a site with no message ids, where identity is the
         // text itself. Reported so an over-merge is visible rather than silent.
         if (stats.duplicates) lines.push('merged_duplicates: ' + stats.duplicates);
+        // Turns the descent missed and the tail settle recovered. Present only
+        // when it actually saved something, so a non-zero value is evidence the
+        // end of this thread would have been dropped before v5.7.
+        if (stats.tailRecovered) lines.push('tail_recovered: ' + stats.tailRecovered);
         lines.push('app: ' + JSON.stringify(stats.app));
         lines.push('generator: Chat Thread Exporter');
         lines.push('---');
@@ -1366,6 +1409,11 @@ html.js .wrap { padding-right: 44px; }
             'were merged. ' + SITE.label + ' remounts turns while scrolling, and this thread has ' +
             'no per-message ids, so identical text is treated as the same turn.</p>\n';
 
+        const tailBlock = !stats.tailRecovered ? '' :
+            '<p class="meta">' + stats.tailRecovered + ' turn(s) at the end of the thread were ' +
+            'recovered by the final pass. Before v5.7 they would have been missing from this ' +
+            'file, which would still have called itself complete.</p>\n';
+
         const artifactBlock = !stats.artifacts ? '' :
             '<p class="warn-box"><strong>' + stats.artifacts + ' artifact(s), image(s) or ' +
             'embedded view(s) were not exported.</strong> Each is marked in place below. Text, ' +
@@ -1410,6 +1458,7 @@ html.js .wrap { padding-right: 44px; }
             stats.count + ' messages' + roleSummary + ' · capture: ' + flag + '</p>\n' +
             startedBlock +
             dupBlock +
+            tailBlock +
             sourceBlock +
             warning +
             artifactBlock +
