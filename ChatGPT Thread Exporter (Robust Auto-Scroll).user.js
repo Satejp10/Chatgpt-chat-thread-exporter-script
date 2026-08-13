@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chat Thread Exporter (Robust Auto-Scroll)
 // @namespace    http://tampermonkey.net/
-// @version      5.7
+// @version      5.8
 // @description  Exports full ChatGPT and Claude threads (defeats virtualization/lazy loading) to Markdown/HTML. Preserves links and code blocks, reports capture completeness, lets you leave the conversation URL and title out, and makes zero network requests.
 // @author       You
 // @match        https://chatgpt.com/*
@@ -50,6 +50,10 @@
     const TAIL_PASSES = 4;
     const MAX_TAIL_SEEKS = 24;
     const TAIL_SETTLE_MS = 450;
+    // Extra top-to-bottom passes after the first, to recover turns that scrolled
+    // out of view in the instant before their text rendered. Each pass stops the
+    // loop early the moment it adds nothing, so a healthy thread pays for one.
+    const MAX_RECOVERY_SWEEPS = 3;
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -834,7 +838,11 @@
         const startedAt = Date.now();
         const originalTop = ctl.top();
 
-        let emptySkipped = 0;
+        // Turns whose container was on the page but whose text had not rendered
+        // yet when a pass first touched them. They are NOT dropped on sight; they
+        // are held here and reconciled once at the very end, so a turn that fills
+        // in a moment later is still captured rather than lost.
+        const pendingEmpty = new Set();
 
         const say = text => { if (loader && loader.setStatus) loader.setStatus(text); };
 
@@ -849,17 +857,31 @@
                 const msg = nodes[i].el;
                 const role = nodes[i].role || 'unknown';
 
-                // Cheapest and most exact check: this very node was already
-                // collected. Costs nothing on the passes where nothing is new,
-                // which is most of them.
+                // A node already captured in full on an earlier pass is done.
+                // Cheapest, most exact check; costs nothing on the passes where
+                // nothing is new, which is most of them.
                 if (seenNodes.has(msg)) continue;
-                seenNodes.add(msg);
 
                 const explicitId = idAttr ? msg.getAttribute(idAttr) : '';
-                if (explicitId && seen.has(explicitId)) { duplicates++; continue; }
+                if (explicitId && seen.has(explicitId)) { seenNodes.add(msg); duplicates++; continue; }
 
                 const text = extractContent(msg);
-                if (!text) { emptySkipped++; continue; }
+                if (!text) {
+                    // The turn's container is on the page but its text has not
+                    // rendered yet — routine in the instant a turn is scrolled
+                    // into view, because the site mounts the box a beat before it
+                    // paints the words. Do NOT mark it seen: a later pass can
+                    // still capture it once the text appears. Marking it seen
+                    // here, as every version through v5.7 did, is the defect that
+                    // dropped the last turns of a thread and mid-thread turns on
+                    // longer ones — the first glimpse of a still-rendering turn
+                    // poisoned it for good and miscounted it as an empty turn.
+                    // What is genuinely blank is reconciled once, at the end.
+                    pendingEmpty.add(msg);
+                    continue;
+                }
+                pendingEmpty.delete(msg);
+                seenNodes.add(msg);
 
                 // Identity for a site with no message id, such as Claude.
                 //
@@ -874,7 +896,7 @@
                 // risk is the inverse, two identical turns collapsing into one,
                 // so every merge is counted and the count goes in the export.
                 const key = explicitId || ('txt:' + role + ':' + text);
-                if (seen.has(key)) { duplicates++; continue; }
+                if (seen.has(key)) { seenNodes.add(msg); duplicates++; continue; }
                 seen.add(key);
 
                 // Read once, on first sight. The neighbourhood is still mounted
@@ -908,48 +930,74 @@
         }
         const topConverged = topSeeks < MAX_TOP_SEEKS;
 
-        // -- Phase B: descend and collect ------------------------------------
-        collect();
+        // -- Descent: one top-to-bottom collecting pass ----------------------
+        // Factored out so it can be run more than once. Virtualization unmounts
+        // a turn as it leaves the viewport, so a single pass reads a moving
+        // window and can miss a turn that was mid-render as it scrolled by. The
+        // remedy is to run this again (phase C) rather than to trust one sweep.
         const step = Math.max(200, ctl.view() * 0.8);
-        let stall = 0;
-        let steps = 0;
-        let reachedBottom = ctl.atBottom();
+        const descend = async () => {
+            let added = collect();
+            let stall = 0;
+            let steps = 0;
+            let bottomHit = ctl.atBottom();
+            while (stall < STALL_PASSES && steps < MAX_DOWN_STEPS) {
+                ctl.by(step);
+                await sleep(STEP_SETTLE_MS);
+                const got = collect();
+                added += got;
+                steps++;
 
-        while (stall < STALL_PASSES && steps < MAX_DOWN_STEPS) {
-            ctl.by(step);
-            await sleep(STEP_SETTLE_MS);
-            const added = collect();
-            steps++;
+                const bottom = ctl.atBottom();
+                if (bottom) bottomHit = true;
 
-            const bottom = ctl.atBottom();
-            if (bottom) reachedBottom = true;
+                // The old loop exited the moment one scrollBy failed to move the
+                // container, which is exactly what happens while older turns are
+                // loading. Only a run of genuinely empty passes at the bottom
+                // ends a descent.
+                if (got === 0 && bottom) stall++; else stall = 0;
 
-            // The old loop exited the moment one scrollBy failed to move the
-            // container, which is exactly what happens while older turns are
-            // loading. Only a run of genuinely empty passes at the bottom ends
-            // the capture now.
-            if (added === 0 && bottom) stall++; else stall = 0;
+                const denom = Math.max(1, ctl.height() - ctl.view());
+                const pct = Math.max(0, Math.min(100, Math.round((ctl.top() / denom) * 100)));
+                say('Capturing conversation...\n' + pct + '%\n' + messages.length + ' messages found');
+            }
+            return { added, bottomHit, ceiling: steps >= MAX_DOWN_STEPS };
+        };
 
-            const denom = Math.max(1, ctl.height() - ctl.view());
-            const pct = Math.max(0, Math.min(100, Math.round((ctl.top() / denom) * 100)));
-            say('Capturing conversation...\n' + pct + '%\n' + messages.length + ' messages found');
+        // -- Phase B: first descent ------------------------------------------
+        let reachedBottom = false;
+        let hitCeiling = false;
+        {
+            const r = await descend();
+            reachedBottom = r.bottomHit;
+            hitCeiling = r.ceiling;
         }
 
-        // -- Phase C: settle at the bottom -----------------------------------
-        // The turns at the very end of a thread were being lost. Phase A scrolls
-        // to the top before anything is collected, which unmounts them, and the
-        // descent then arrives at the bottom and gives the site three 220ms
-        // passes to put them back. That is not always long enough, and when it
-        // is not, the turns are absent from `messages` and from `emptySkipped`
-        // alike — never in the DOM, so never counted — and the file called
-        // itself complete while missing its last few turns.
-        //
-        // So the bottom gets its own phase: re-assert it and keep collecting
-        // until several passes in a row come back empty. Deliberately at the END
-        // of the capture and not before phase A. `messages` is append-ordered,
-        // so a turn collected here lands last, which is where it belongs.
-        // Collecting the same turns before phase A would have put the tail of
-        // the conversation at the top of the file.
+        // -- Phase C: recovery sweeps ----------------------------------------
+        // The empty-container fix in collect() means a still-rendering turn is no
+        // longer dropped on first sight, but a turn can still scroll out of the
+        // viewport in the brief window before its text renders, and once it has
+        // unmounted the descent cannot see it again. So re-sweep from the top and
+        // collect once more, repeating until a whole pass turns up nothing new.
+        // On a short thread the first re-sweep adds zero and this stops at once;
+        // the cost there is a single extra scroll. The history is already in the
+        // page from phase A, so seeking to the top re-mounts it without a refetch.
+        let sweeps = 0;
+        while (sweeps < MAX_RECOVERY_SWEEPS) {
+            ctl.setTop(0);
+            await sleep(TOP_SETTLE_MS);
+            const r = await descend();
+            sweeps++;
+            if (r.bottomHit) reachedBottom = true;
+            if (r.ceiling) hitCeiling = true;
+            if (r.added === 0) break;
+        }
+
+        // -- Phase D: settle at the bottom -----------------------------------
+        // The turns at the very end of a thread are the last to render. Re-assert
+        // the bottom and keep collecting until several passes in a row come back
+        // empty. `messages` is append-ordered, so a turn collected here lands
+        // last, which is where it belongs.
         let tailRecovered = 0;
         let tailStable = 0;
         let tailSeeks = 0;
@@ -966,9 +1014,17 @@
         // was still moving when the capture stopped, so it may be short.
         const tailSettled = tailSeeks < MAX_TAIL_SEEKS;
 
-        ctl.setTop(originalTop);
+        // One last look now that scrolling has stopped and the page has settled,
+        // then reconcile the turns still marked empty. A tracked-empty node that
+        // is still on the page and still yields no text is a genuine blank and
+        // counts against completeness; one that unmounted without ever yielding
+        // text makes no claim either way — it was either recaptured under its
+        // content key or scrolled out of the run — so it is not counted.
+        collect();
+        let emptySkipped = 0;
+        pendingEmpty.forEach(node => { if (node.isConnected && !extractContent(node)) emptySkipped++; });
 
-        const hitCeiling = steps >= MAX_DOWN_STEPS;
+        ctl.setTop(originalTop);
         // A dropped turn counts against completeness. It did not before v5.4:
         // the reason string was built and then never shown, because reasons are
         // only rendered when the capture is flagged incomplete. A thread missing

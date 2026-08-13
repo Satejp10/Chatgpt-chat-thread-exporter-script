@@ -25,7 +25,7 @@ single-page apps and navigating there from a chat does not reload the document.
 
 ## Releases
 
-**[Download v5.7](https://raw.githubusercontent.com/Satejp10/Chatgpt-chat-thread-exporter-script/b4a12f7ee9fad4c7598d5b42585ff0361a0b50f7/ChatGPT%20Thread%20Exporter%20%28Robust%20Auto-Scroll%29.user.js)**
+**[Download v5.8](https://raw.githubusercontent.com/Satejp10/Chatgpt-chat-thread-exporter-script/a4ffafe489d6cbddbe7d409f3b8ef9ac86242dd3/ChatGPT%20Thread%20Exporter%20%28Robust%20Auto-Scroll%29.user.js)**
 
 Open that with Tampermonkey or Violentmonkey installed and the script manager
 shows you its install prompt with the full source in it. Nothing installs until
