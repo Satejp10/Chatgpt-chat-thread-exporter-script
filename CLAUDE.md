@@ -1,9 +1,30 @@
 # Working rules for this repo
 
+## How to report to the user
+
+The user is a product executive with limited time, not an engineer on this
+codebase. Claude builds; the user decides and ships. Reports are short and in
+plain words.
+
+Every reply carries only what changes a decision:
+
+- what state the product is in now
+- what is blocking it, if anything
+- the single next step, and one line on why
+- anything Claude needs the user to decide, asked outright
+
+Leave out: file names, function names, code, line numbers, version-by-version
+history, and the reasoning that led to the fix. Say what broke in terms of what
+the user would see, not in terms of the code. No jargon. If a sentence would not
+change what the user does next, cut it. Detail belongs in `LOG.md` and the pull
+request, which is what they are for.
+
 ## Claude does not run the test suite
 
-The user runs it. It is faster on their machine, costs less, and lets them read
-the output themselves.
+All testing is the user's, without exception. Claude never runs the tests and
+never reports a change as verified or working — only as built and ready to test.
+It is faster on their machine, costs less, and lets them read the output
+themselves.
 
 This applies to `npm test`, `node unit.test.js`, `node e2e.test.js`,
 `node trusted-types.test.js` and `npm run measure`. Do not run them, and do not
