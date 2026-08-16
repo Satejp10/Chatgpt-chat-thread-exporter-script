@@ -314,3 +314,12 @@ Entry format:
 - open: the virtualising fixture (unmounts turns as they leave the viewport) is still the single highest-value test. It is now the ONLY way to prove fix 1 in CI rather than from a user export. Deferred to the user's write-run-fix loop per the no-tests rule.
 - open: README download link points at the v5.7 commit; updated in a follow-up commit, since a commit cannot contain its own sha.
 - next: user installs v5.8 and re-exports the short thread that was losing its tail. If every turn is present and `turns_dropped_empty` is absent, the oldest bug in the tool is closed.
+
+## 2026-08-13 | session 20 | web
+- did: v5.8 merged to main as 31b9b96 via PR #19. No code changed this session.
+- did: added a "How to report to the user" section to `CLAUDE.md`, at the user's instruction. They are a product executive with limited time: reports carry state, blocker, next step, and explicit asks only. No file names, function names, line numbers, version history or fix reasoning in chat. Detail goes to `LOG.md` and the PR body, which is what they are for.
+- did: hardened the no-tests rule in the same file. It was already there; the user restated it unprompted, which means the existing wording was not doing its job. Now says all testing is the user's without exception, and that Claude never reports a change as verified or working — only as built and ready to test.
+- decided: put both in `CLAUDE.md` rather than answer in chat, because a preference stated in one session is invisible to the next. The no-tests rule needed session 17 to write it down and still had to be restated; a communication rule would have decayed the same way.
+- note: the user restating a rule already in `CLAUDE.md` is the signal worth keeping from this session. Check whether a rule is already written before assuming it is new, and if it is, the fix is stronger wording, not a second copy.
+- open: v5.8 is unconfirmed. It is merged and installable but no live export has been run against it, so the capture bug is fixed in intent only. Everything else from session 19 stands — no virtualising fixture, Claude artifact selectors unverified, no tag or Release.
+- next: user installs v5.8 and re-exports the 6-message thread that was failing. Nothing else is in flight.
